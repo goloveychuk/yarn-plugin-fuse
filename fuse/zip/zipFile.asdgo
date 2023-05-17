@@ -1,0 +1,127 @@
+// package main
+
+// import (
+// 	"archive/zip"
+// 	"context"
+// 	"fmt"
+// 	"io/ioutil"
+// 	"sync"
+// 	"syscall"
+
+// 	"github.com/hanwen/go-fuse/v2/fs"
+// 	"github.com/hanwen/go-fuse/v2/fuse"
+// )
+
+// // zipFile is a file read from a zip archive.
+// type zipFile struct {
+// 	fs.Inode
+// 	file *zip.File
+
+// 	mu   sync.Mutex
+// 	data []byte
+// }
+
+// var _ = (fs.NodeOpener)((*zipFile)(nil))
+
+// type zipFileHandle struct {
+// 	data  []byte
+// 	attrs fuse.Attr
+// }
+
+// var _ = (fs.FileReader)((*zipFileHandle)(nil))
+// var _ = (fs.FileGetattrer)((*zipFileHandle)(nil))
+
+// func newZipFileHandle(file *zip.File, data []byte) *zipFileHandle {
+// 	zf := &zipFileHandle{data: data}
+// 	zf.attrs.Mode = uint32(file.Mode()) & 07777
+// 	zf.attrs.Nlink = 1
+// 	zf.attrs.Mtime = uint64(file.ModTime().Unix())
+// 	zf.attrs.Atime = zf.attrs.Mtime
+// 	zf.attrs.Ctime = zf.attrs.Mtime
+// 	zf.attrs.Size = file.UncompressedSize64
+// 	const bs = 512
+// 	zf.attrs.Blksize = bs
+// 	zf.attrs.Blocks = (zf.attrs.Size + bs - 1) / bs
+// 	fmt.Println("newZipFileHandle", zf.attrs.Size)
+// 	return zf
+// }
+
+// func (zf *zipFileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+// 	fmt.Println("read")
+// 	end := int(off) + len(dest)
+// 	if end > len(zf.data) {
+// 		end = len(zf.data)
+// 	}
+// 	return fuse.ReadResultData(zf.data[off:end]), 0
+// }
+
+// func (f *zipFileHandle) Write(ctx context.Context, fh fs.FileHandle, data []byte, off int64) (uint32, syscall.Errno) {
+
+// 	// return memFile.Write(ctx, nil, data, off)
+// 	// fmt.Print("write", data)
+// 	// end := int64(len(data)) + off
+// 	// if int64(len(f.Data)) < end {
+// 	// 	n := make([]byte, end)
+// 	// 	copy(n, f.Data)
+// 	// 	f.Data = n
+// 	// }
+
+// 	// copy(f.Data[off:off+int64(len(data))], data)
+
+// 	return uint32(len(data)), 0
+// }
+
+// func (zf *zipFileHandle) Getattr(ctx context.Context, out *fuse.AttrOut) syscall.Errno {
+// 	out.Attr = zf.attrs
+// 	fmt.Println("getattr", out.Attr)
+// 	return 0
+// }
+
+// // Open lazily unpacks zip data
+// func (zf *zipFile) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+// 	zf.mu.Lock()
+// 	defer zf.mu.Unlock()
+// 	fmt.Println("open", flags)
+// 	if flags == syscall.O_WRONLY {
+// 		name, parent := zf.Parent()
+// 		memFile := &fs.MemRegularFile{Data: zf.data}
+// 		newFile := zf.NewPersistentInode(ctx, memFile, zf.StableAttr())
+// 		fmt.Println("open created", newFile.StableAttr().Ino)
+// 		parent.AddChild(name, newFile, true) //mb bad idea
+// 		return nil, 0, 0
+// 	}
+
+// 	rc, err := zf.file.Open()
+// 	if err != nil {
+// 		return nil, 0, syscall.EIO
+// 	}
+// 	content, err := ioutil.ReadAll(rc)
+// 	if err != nil {
+// 		return nil, 0, syscall.EIO
+// 	}
+
+// 	// We don't return a filehandle since we don't really need
+// 	// one.  The file content is immutable, so hint the kernel to
+// 	// cache the data.
+// 	return newZipFileHandle(zf.file, content), fuse.FOPEN_KEEP_CACHE, 0
+// }
+
+// func (zf *zipFile) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+// 	newZipFileHandle(zf.file, []byte{}).Getattr(ctx, out)
+// 	return 0
+// }
+
+// func (f *zipFile) Setattr(ctx context.Context, file fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
+// 	f.mu.Lock()
+// 	defer f.mu.Unlock()
+
+// 	fmt.Print("should not be caleld", f.Inode.StableAttr().Ino)
+// 	// if sz, ok := in.GetSize(); ok {
+// 	// 	f.Data = f.Data[:sz]
+// 	// }
+// 	// out.Attr = f.Attr
+// 	// out.Size = uint64(len(f.Data))
+// 	return fs.OK
+// }
+
+// // var _ = (fs.NodeOnAdder)((*ZipRoot)(nil))
