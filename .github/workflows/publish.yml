@@ -1,0 +1,35 @@
+name: NodeJS with Webpack
+on:
+  push:
+    branches: [ "master" ]
+#   pull_request:
+#     branches: [ "master" ]
+
+jobs:
+  build:
+    name: Release Asset
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18.6.0
+
+      - name: Build project
+        run: |
+          yarn install --immutable-cache --check-cache && \
+          yarn build
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+          files: |
+            - "bundles/@yarnpkg/plugin-ignore-deps.js"
