@@ -32,5 +32,4 @@ jobs:
           prerelease: false
 #           tag_name: tag-name-${{ github.ref }}
 #           name: Release ${{ github.ref }}
-          files: |
-            - "bundles/@yarnpkg/plugin-ignore-deps.js"
+          files: bundles/@yarnpkg/plugin-ignore-deps.js
