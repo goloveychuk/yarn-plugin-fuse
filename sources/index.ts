@@ -93,8 +93,7 @@ class IgnoreDepsResolver implements Resolver {
 
   async getCandidates(
     _descriptor: Descriptor,
-    dependencies: Map<DescriptorHash, Package>,
-    opts: ResolveOptions,
+    dependencies: Record<string, Package>, opts: ResolveOptions
   ) {
     const descriptor = getOriginalDescriptor(_descriptor);
     return (
@@ -104,11 +103,10 @@ class IgnoreDepsResolver implements Resolver {
 
   async getSatisfying(
     _descriptor: Descriptor,
-    references: Array<string>,
-    opts: ResolveOptions,
+    dependencies: Record<string, Package>, locators: Array<Locator>, opts: ResolveOptions
   ) {
     const descriptor = getOriginalDescriptor(_descriptor);
-    return opts.resolver.getSatisfying(descriptor, references, opts);
+    return opts.resolver.getSatisfying(descriptor, dependencies, locators, opts);
   }
 
   async resolve(_locator: Locator, opts: ResolveOptions): Promise<Package> {
