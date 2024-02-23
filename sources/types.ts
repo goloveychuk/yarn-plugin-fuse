@@ -2,9 +2,9 @@
 
 export interface FuseNode {
     // name: string
-    type: 'dir' | 'zip'
-    zipPath?: string
-    ch?: Record<string, FuseNode>
+    target?: string
+    linkType: 'HARD' | 'SOFT'
+    children?: Record<string, FuseNode>
 }
 
 

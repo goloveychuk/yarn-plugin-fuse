@@ -61,9 +61,12 @@ function isLinkLocator(locatorKey: LocatorKey): boolean {
   return descriptor.range.startsWith(`link:`);
 }
 
-
-
-type LocationNode = { children: Map<Filename, LocationNode>, locator?: LocatorKey, linkType: LinkType };
+type LocationNode = {
+  children: Map<Filename, LocationNode>;
+  locator?: LocatorKey;
+  linkType: LinkType;
+  target?: PortablePath;
+};
 type LocationRoot = PortablePath;
 
 /**
@@ -101,33 +104,45 @@ type LocationRoot = PortablePath;
  */
 type LocationTree = Map<LocationRoot, LocationNode>;
 
-const parseLocation = (location: PortablePath, {skipPrefix}: {skipPrefix: PortablePath}): {locationRoot: PortablePath, segments: Array<Filename>} => {
+const parseLocation = (
+  location: PortablePath,
+  { skipPrefix }: { skipPrefix: PortablePath },
+): { locationRoot: PortablePath; segments: Array<Filename> } => {
   const projectRelativePath = ppath.contains(skipPrefix, location);
   if (projectRelativePath === null)
-    throw new Error(`Assertion failed: Writing attempt prevented to ${location} which is outside project root: ${skipPrefix}`);
+    throw new Error(
+      `Assertion failed: Writing attempt prevented to ${location} which is outside project root: ${skipPrefix}`,
+    );
 
   const allSegments = projectRelativePath
     .split(ppath.sep)
     // Ignore empty segments (after trailing slashes)
-    .filter(segment => segment !== ``);
+    .filter((segment) => segment !== ``);
   const nmIndex = allSegments.indexOf(NODE_MODULES);
 
   // Project path, up until the first node_modules segment
-  const relativeRoot = allSegments.slice(0, nmIndex).join(ppath.sep) as PortablePath;
+  const relativeRoot = allSegments
+    .slice(0, nmIndex)
+    .join(ppath.sep) as PortablePath;
   const locationRoot = ppath.join(skipPrefix, relativeRoot);
 
   // All segments that follow
   const segments = allSegments.slice(nmIndex) as Array<Filename>;
 
-  return {locationRoot, segments};
+  return { locationRoot, segments };
 };
 
-type LoadManifest = (locator: LocatorKey, installLocation: PortablePath) => Promise<Pick<Manifest, 'bin'>>;
+type LoadManifest = (
+  locator: LocatorKey,
+  installLocation: PortablePath,
+) => Promise<Pick<Manifest, 'bin'>>;
 
-const buildLocationTree = (locatorMap: NodeModulesLocatorMap | null, {skipPrefix}: {skipPrefix: PortablePath}): LocationTree => {
+const buildLocationTree = (
+  locatorMap: NodeModulesLocatorMap | null,
+  { skipPrefix }: { skipPrefix: PortablePath },
+): LocationTree => {
   const locationTree: LocationTree = new Map();
-  if (locatorMap === null)
-    return locationTree;
+  if (locatorMap === null) return locationTree;
 
   const makeNode: () => LocationNode = () => ({
     children: new Map(),
@@ -138,22 +153,36 @@ const buildLocationTree = (locatorMap: NodeModulesLocatorMap | null, {skipPrefix
     if (info.linkType === LinkType.SOFT) {
       const internalPath = ppath.contains(skipPrefix, info.target);
       if (internalPath !== null) {
-        const node = miscUtils.getFactoryWithDefault(locationTree, info.target, makeNode);
+        const node = miscUtils.getFactoryWithDefault(
+          locationTree,
+          info.target,
+          makeNode,
+        );
         node.locator = locator;
         node.linkType = info.linkType;
       }
     }
 
     for (const location of info.locations) {
-      const {locationRoot, segments} = parseLocation(location, {skipPrefix});
+      const { locationRoot, segments } = parseLocation(location, {
+        skipPrefix,
+      });
 
-      let node = miscUtils.getFactoryWithDefault(locationTree, locationRoot, makeNode);
+      let node = miscUtils.getFactoryWithDefault(
+        locationTree,
+        locationRoot,
+        makeNode,
+      );
 
       for (let idx = 0; idx < segments.length; ++idx) {
         const segment = segments[idx];
         // '.' segment exists only for top-level locator, skip it
         if (segment !== `.`) {
-          const nextNode = miscUtils.getFactoryWithDefault(node.children, segment, makeNode);
+          const nextNode = miscUtils.getFactoryWithDefault(
+            node.children,
+            segment,
+            makeNode,
+          );
 
           node.children.set(segment, nextNode);
           node = nextNode;
@@ -162,6 +191,7 @@ const buildLocationTree = (locatorMap: NodeModulesLocatorMap | null, {skipPrefix
         if (idx === segments.length - 1) {
           node.locator = locator;
           node.linkType = info.linkType;
+          node.target = info.target;
         }
       }
     }
@@ -170,10 +200,14 @@ const buildLocationTree = (locatorMap: NodeModulesLocatorMap | null, {skipPrefix
   return locationTree;
 };
 
-
-async function createBinSymlinkMap(installState: NodeModulesLocatorMap, locationTree: LocationTree, projectRoot: PortablePath, {loadManifest}: {loadManifest: LoadManifest}) {
+async function createBinSymlinkMap(
+  installState: NodeModulesLocatorMap,
+  locationTree: LocationTree,
+  projectRoot: PortablePath,
+  { loadManifest }: { loadManifest: LoadManifest },
+) {
   const locatorScriptMap = new Map<LocatorKey, Map<string, string>>();
-  for (const [locatorKey, {locations}] of installState) {
+  for (const [locatorKey, { locations }] of installState) {
     const manifest = !isLinkLocator(locatorKey)
       ? await loadManifest(locatorKey, locations[0])
       : null;
@@ -182,7 +216,8 @@ async function createBinSymlinkMap(installState: NodeModulesLocatorMap, location
     if (manifest) {
       for (const [name, value] of manifest.bin) {
         // const target = ppath.join(locations[0], value);
-        if (value !== ``) { //&& xfs.existsSync(target)
+        if (value !== ``) {
+          //&& xfs.existsSync(target)
           bin.set(name, value);
         }
       }
@@ -193,25 +228,46 @@ async function createBinSymlinkMap(installState: NodeModulesLocatorMap, location
 
   const binSymlinks: BinSymlinkMap = new Map();
 
-  const getBinSymlinks = (location: PortablePath, parentLocatorLocation: PortablePath, node: LocationNode): Map<Filename, PortablePath> => {
+  const getBinSymlinks = (
+    location: PortablePath,
+    parentLocatorLocation: PortablePath,
+    node: LocationNode,
+  ): Map<Filename, PortablePath> => {
     const symlinks = new Map();
     const internalPath = ppath.contains(projectRoot, location);
     if (node.locator && internalPath !== null) {
       const binScripts = locatorScriptMap.get(node.locator)!;
       for (const [filename, scriptPath] of binScripts) {
-        const symlinkTarget = ppath.join(location, npath.toPortablePath(scriptPath));
+        const symlinkTarget = ppath.join(
+          location,
+          npath.toPortablePath(scriptPath),
+        );
         symlinks.set(filename, symlinkTarget);
       }
       for (const [childLocation, childNode] of node.children) {
         const absChildLocation = ppath.join(location, childLocation);
-        const childSymlinks = getBinSymlinks(absChildLocation, absChildLocation, childNode);
+        const childSymlinks = getBinSymlinks(
+          absChildLocation,
+          absChildLocation,
+          childNode,
+        );
         if (childSymlinks.size > 0) {
-          binSymlinks.set(location, new Map([...(binSymlinks.get(location) || new Map()), ...childSymlinks]));
+          binSymlinks.set(
+            location,
+            new Map([
+              ...(binSymlinks.get(location) || new Map()),
+              ...childSymlinks,
+            ]),
+          );
         }
       }
     } else {
       for (const [childLocation, childNode] of node.children) {
-        const childSymlinks = getBinSymlinks(ppath.join(location, childLocation), parentLocatorLocation, childNode);
+        const childSymlinks = getBinSymlinks(
+          ppath.join(location, childLocation),
+          parentLocatorLocation,
+          childNode,
+        );
         for (const [name, symlinkTarget] of childSymlinks) {
           symlinks.set(name, symlinkTarget);
         }
@@ -223,37 +279,56 @@ async function createBinSymlinkMap(installState: NodeModulesLocatorMap, location
   for (const [location, node] of locationTree) {
     const symlinks = getBinSymlinks(location, location, node);
     if (symlinks.size > 0) {
-      binSymlinks.set(location, new Map([...(binSymlinks.get(location) || new Map()), ...symlinks]));
+      binSymlinks.set(
+        location,
+        new Map([...(binSymlinks.get(location) || new Map()), ...symlinks]),
+      );
     }
   }
 
   return binSymlinks;
 }
 
-
-
-function buildFuseTree(tree: NodeModulesTree) { //todo gewnerate from LocationTree
+function buildFuseTree(
+  locationTree: LocationTree,
+  binSymlinks: BinSymlinkMap,
+): FuseData {
   const result: FuseData = { roots: {} };
 
-  for (const [key, value] of tree.entries()) {
+  const mapNode = (node: LocationNode): FuseNode => {
+    const children = Array.from(node.children.entries()).map(
+      ([name, child]) => [name, mapNode(child)] as const,
+    );
+    return {
+      linkType: node.linkType,
+      target: node.target,
+      children: Object.fromEntries(children),
+    };
+  };
 
-    const parts = key.split(ppath.sep);
-    const nmIndex = parts.indexOf(`node_modules`);
-    if (nmIndex === -1) continue;
-    const mountpoint = parts.slice(0, nmIndex + 1).join(ppath.sep);
-    const path = [mountpoint, ...parts.slice(nmIndex + 1)];
-    const last = path.pop();
-    let current = result.roots;
-    if ('linkType' in value) {
-      if (value.linkType === LinkType.HARD && value.target.includes('.zip')) {
-        for (const p of path) {
-          if (!current[p]) {
-            current[p] = { ch: {}, type: 'dir' };
-          }
-          current = current[p].ch;
+  for (const [key, value] of locationTree.entries()) {
+    if (value.linkType === LinkType.SOFT) {
+      continue;
+    }
+    for (const [chName, ch] of value.children.entries()) {
+      const root = ppath.join(key, chName);
+      const node = mapNode(ch);
+
+      const bins = binSymlinks.get(key);
+      if (bins) {
+        const binDir = (node.children[`.bin`] ??= {
+          children: {},
+          linkType: LinkType.HARD,
+        });
+        for (const [binName, binTarget] of bins.entries()) {
+          binDir.children[binName] = {
+            linkType: LinkType.SOFT,
+            target: binTarget,
+          };
         }
-        current[last] = { ch: {}, zipPath: value.target, type: 'zip' };
       }
+
+      result.roots[root] = node;
     }
   }
   return result;
@@ -459,7 +534,10 @@ class FuseInstaller implements Installer {
             ).join(`, `)}, using default: "${hoistingLimits}"`,
           );
         }
-        return [workspace.relativeCwd, hoistingLimits as NodeModulesHoistingLimits];
+        return [
+          workspace.relativeCwd,
+          hoistingLimits as NodeModulesHoistingLimits,
+        ];
       }),
     );
 
@@ -560,8 +638,7 @@ class FuseInstaller implements Installer {
 
       return undefined;
     }
-    const locatorMap = buildLocatorMap(tree)
-    
+    const locatorMap = buildLocatorMap(tree);
 
     // await persistNodeModules(preinstallState, locatorMap, {
     //   baseFs: defaultFsLayer,
@@ -617,20 +694,25 @@ class FuseInstaller implements Installer {
         )} Node option is required for launching it`,
       );
 
+    const locationTree = buildLocationTree(locatorMap, {
+      skipPrefix: this.opts.project.cwd,
+    });
+    const binSymlinks = await createBinSymlinkMap(
+      locatorMap,
+      locationTree,
+      this.opts.project.cwd,
+      {
+        loadManifest: async (locatorKey) => {
+          const locator = structUtils.parseLocator(locatorKey);
 
+          const slot = this.localStore.get(locator.locatorHash);
+          if (typeof slot === `undefined`)
+            throw new Error(`Assertion failed: Expected the slot to exist`);
 
-    const locationTree = buildLocationTree(locatorMap, {skipPrefix: this.opts.project.cwd});
-    console.log(inspect(locationTree, {depth: 10}));
-    const binSymlinks = await createBinSymlinkMap(locatorMap, locationTree, this.opts.project.cwd, {loadManifest: async locatorKey => {
-      const locator = structUtils.parseLocator(locatorKey);
-
-      const slot = this.localStore.get(locator.locatorHash);
-      if (typeof slot === `undefined`)
-        throw new Error(`Assertion failed: Expected the slot to exist`);
-
-      return slot.customPackageData.manifest;
-    }});
-
+          return slot.customPackageData.manifest;
+        },
+      },
+    );
 
     const installStatePath = ppath.join(
       this.opts.project.cwd,
@@ -638,7 +720,8 @@ class FuseInstaller implements Installer {
     );
     // console.log(locatorMap);
 
-    const fuseState = buildFuseTree(tree);
+    console.log(inspect(locationTree, { depth: 10 }));
+    const fuseState = buildFuseTree(locationTree, binSymlinks);
     // console.log(tree)
     await xfs.changeFilePromise(
       installStatePath,
