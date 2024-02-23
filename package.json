@@ -1,14 +1,15 @@
 {
-  "name": "yarn-plugin-ignore-deps",
+  "name": "yarn-plugin-fuse",
   "main": "./sources/index.ts",
   "dependencies": {
-    "@yarnpkg/core": "^4.0.0",
-    "@yarnpkg/cli": "^4.0.0",
-    "@yarnpkg/builder": "^4.0.0",
     "@types/node": "^18.0.0",
+    "@yarnpkg/builder": "^4.0.0",
+    "@yarnpkg/cli": "^4.0.0",
+    "@yarnpkg/core": "^4.0.0",
     "typescript": "^5.0.0"
   },
   "scripts": {
     "build": "builder build plugin"
-  }
+  },
+  "packageManager": "yarn@4.1.0"
 }
