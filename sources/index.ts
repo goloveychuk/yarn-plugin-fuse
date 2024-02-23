@@ -38,8 +38,13 @@ import { parseSyml } from '@yarnpkg/parsers';
 import { jsInstallUtils } from '@yarnpkg/plugin-pnp';
 import { PnpApi, PackageInformation } from '@yarnpkg/pnp';
 import { FuseData, FuseNode } from './types';
+import { inspect } from 'util';
+
+const NODE_MODULES = `node_modules` as Filename;
 
 type LocatorKey = string;
+
+type BinSymlinkMap = Map<PortablePath, Map<Filename, PortablePath>>;
 
 type UnboxPromise<T extends Promise<any>> = T extends Promise<infer U>
   ? U
@@ -56,7 +61,178 @@ function isLinkLocator(locatorKey: LocatorKey): boolean {
   return descriptor.range.startsWith(`link:`);
 }
 
-function buildFuseTree(tree: NodeModulesTree) {
+
+
+type LocationNode = { children: Map<Filename, LocationNode>, locator?: LocatorKey, linkType: LinkType };
+type LocationRoot = PortablePath;
+
+/**
+ * Locations tree. It starts with the map of location roots and continues as maps
+ * of nested directory entries.
+ *
+ * Example:
+ *  Map {
+ *   '' => children: Map {
+ *     'react-apollo' => {
+ *       children: Map {
+ *         'node_modules' => {
+ *           children: Map {
+ *             '@apollo' => {
+ *               children: Map {
+ *                 'react-hooks' => {
+ *                   children: Map {},
+ *                   locator: '@apollo/react-hooks:virtual:cf...#npm:3.1.3'
+ *                 }
+ *               }
+ *             }
+ *           }
+ *         }
+ *       },
+ *       locator: 'react-apollo:virtual:24...#npm:3.1.3'
+ *     },
+ *   },
+ *   'packages/client' => children: Map {
+ *     'node_modules' => Map {
+ *       ...
+ *     }
+ *   }
+ *   ...
+ * }
+ */
+type LocationTree = Map<LocationRoot, LocationNode>;
+
+const parseLocation = (location: PortablePath, {skipPrefix}: {skipPrefix: PortablePath}): {locationRoot: PortablePath, segments: Array<Filename>} => {
+  const projectRelativePath = ppath.contains(skipPrefix, location);
+  if (projectRelativePath === null)
+    throw new Error(`Assertion failed: Writing attempt prevented to ${location} which is outside project root: ${skipPrefix}`);
+
+  const allSegments = projectRelativePath
+    .split(ppath.sep)
+    // Ignore empty segments (after trailing slashes)
+    .filter(segment => segment !== ``);
+  const nmIndex = allSegments.indexOf(NODE_MODULES);
+
+  // Project path, up until the first node_modules segment
+  const relativeRoot = allSegments.slice(0, nmIndex).join(ppath.sep) as PortablePath;
+  const locationRoot = ppath.join(skipPrefix, relativeRoot);
+
+  // All segments that follow
+  const segments = allSegments.slice(nmIndex) as Array<Filename>;
+
+  return {locationRoot, segments};
+};
+
+type LoadManifest = (locator: LocatorKey, installLocation: PortablePath) => Promise<Pick<Manifest, 'bin'>>;
+
+const buildLocationTree = (locatorMap: NodeModulesLocatorMap | null, {skipPrefix}: {skipPrefix: PortablePath}): LocationTree => {
+  const locationTree: LocationTree = new Map();
+  if (locatorMap === null)
+    return locationTree;
+
+  const makeNode: () => LocationNode = () => ({
+    children: new Map(),
+    linkType: LinkType.HARD,
+  });
+
+  for (const [locator, info] of locatorMap.entries()) {
+    if (info.linkType === LinkType.SOFT) {
+      const internalPath = ppath.contains(skipPrefix, info.target);
+      if (internalPath !== null) {
+        const node = miscUtils.getFactoryWithDefault(locationTree, info.target, makeNode);
+        node.locator = locator;
+        node.linkType = info.linkType;
+      }
+    }
+
+    for (const location of info.locations) {
+      const {locationRoot, segments} = parseLocation(location, {skipPrefix});
+
+      let node = miscUtils.getFactoryWithDefault(locationTree, locationRoot, makeNode);
+
+      for (let idx = 0; idx < segments.length; ++idx) {
+        const segment = segments[idx];
+        // '.' segment exists only for top-level locator, skip it
+        if (segment !== `.`) {
+          const nextNode = miscUtils.getFactoryWithDefault(node.children, segment, makeNode);
+
+          node.children.set(segment, nextNode);
+          node = nextNode;
+        }
+
+        if (idx === segments.length - 1) {
+          node.locator = locator;
+          node.linkType = info.linkType;
+        }
+      }
+    }
+  }
+
+  return locationTree;
+};
+
+
+async function createBinSymlinkMap(installState: NodeModulesLocatorMap, locationTree: LocationTree, projectRoot: PortablePath, {loadManifest}: {loadManifest: LoadManifest}) {
+  const locatorScriptMap = new Map<LocatorKey, Map<string, string>>();
+  for (const [locatorKey, {locations}] of installState) {
+    const manifest = !isLinkLocator(locatorKey)
+      ? await loadManifest(locatorKey, locations[0])
+      : null;
+
+    const bin = new Map();
+    if (manifest) {
+      for (const [name, value] of manifest.bin) {
+        // const target = ppath.join(locations[0], value);
+        if (value !== ``) { //&& xfs.existsSync(target)
+          bin.set(name, value);
+        }
+      }
+    }
+
+    locatorScriptMap.set(locatorKey, bin);
+  }
+
+  const binSymlinks: BinSymlinkMap = new Map();
+
+  const getBinSymlinks = (location: PortablePath, parentLocatorLocation: PortablePath, node: LocationNode): Map<Filename, PortablePath> => {
+    const symlinks = new Map();
+    const internalPath = ppath.contains(projectRoot, location);
+    if (node.locator && internalPath !== null) {
+      const binScripts = locatorScriptMap.get(node.locator)!;
+      for (const [filename, scriptPath] of binScripts) {
+        const symlinkTarget = ppath.join(location, npath.toPortablePath(scriptPath));
+        symlinks.set(filename, symlinkTarget);
+      }
+      for (const [childLocation, childNode] of node.children) {
+        const absChildLocation = ppath.join(location, childLocation);
+        const childSymlinks = getBinSymlinks(absChildLocation, absChildLocation, childNode);
+        if (childSymlinks.size > 0) {
+          binSymlinks.set(location, new Map([...(binSymlinks.get(location) || new Map()), ...childSymlinks]));
+        }
+      }
+    } else {
+      for (const [childLocation, childNode] of node.children) {
+        const childSymlinks = getBinSymlinks(ppath.join(location, childLocation), parentLocatorLocation, childNode);
+        for (const [name, symlinkTarget] of childSymlinks) {
+          symlinks.set(name, symlinkTarget);
+        }
+      }
+    }
+    return symlinks;
+  };
+
+  for (const [location, node] of locationTree) {
+    const symlinks = getBinSymlinks(location, location, node);
+    if (symlinks.size > 0) {
+      binSymlinks.set(location, new Map([...(binSymlinks.get(location) || new Map()), ...symlinks]));
+    }
+  }
+
+  return binSymlinks;
+}
+
+
+
+function buildFuseTree(tree: NodeModulesTree) { //todo gewnerate from LocationTree
   const result: FuseData = { roots: {} };
 
   for (const [key, value] of tree.entries()) {
@@ -283,7 +459,7 @@ class FuseInstaller implements Installer {
             ).join(`, `)}, using default: "${hoistingLimits}"`,
           );
         }
-        return [workspace.relativeCwd, hoistingLimits];
+        return [workspace.relativeCwd, hoistingLimits as NodeModulesHoistingLimits];
       }),
     );
 
@@ -293,7 +469,7 @@ class FuseInstaller implements Installer {
           this.opts.project.configuration.get(`nmSelfReferences`);
         selfReferences =
           workspace.manifest.installConfig?.selfReferences ?? selfReferences;
-        return [workspace.relativeCwd, selfReferences];
+        return [workspace.relativeCwd, selfReferences as Boolean];
       }),
     );
 
@@ -384,20 +560,7 @@ class FuseInstaller implements Installer {
 
       return undefined;
     }
-    const locatorMap = buildLocatorMap(tree);
-    const installStatePath = ppath.join(
-      this.opts.project.cwd,
-      `.yarn/fuse-state.json`,
-    );
-    // console.log(locatorMap);
-
-    const fuseState = buildFuseTree(tree);
-    // console.log(tree)
-    await xfs.changeFilePromise(
-      installStatePath,
-      JSON.stringify(fuseState, null, 2),
-      {},
-    );
+    const locatorMap = buildLocatorMap(tree)
     
 
     // await persistNodeModules(preinstallState, locatorMap, {
@@ -454,8 +617,37 @@ class FuseInstaller implements Installer {
         )} Node option is required for launching it`,
       );
 
+
+
+    const locationTree = buildLocationTree(locatorMap, {skipPrefix: this.opts.project.cwd});
+    console.log(inspect(locationTree, {depth: 10}));
+    const binSymlinks = await createBinSymlinkMap(locatorMap, locationTree, this.opts.project.cwd, {loadManifest: async locatorKey => {
+      const locator = structUtils.parseLocator(locatorKey);
+
+      const slot = this.localStore.get(locator.locatorHash);
+      if (typeof slot === `undefined`)
+        throw new Error(`Assertion failed: Expected the slot to exist`);
+
+      return slot.customPackageData.manifest;
+    }});
+
+
+    const installStatePath = ppath.join(
+      this.opts.project.cwd,
+      `.yarn/fuse-state.json`,
+    );
+    // console.log(locatorMap);
+
+    const fuseState = buildFuseTree(tree);
+    // console.log(tree)
+    await xfs.changeFilePromise(
+      installStatePath,
+      JSON.stringify(fuseState, null, 2),
+      {},
+    );
+
     console.log(installStatuses);
-    console.log(this.customData);
+    console.log(binSymlinks);
     return {
       customData: this.customData,
       records: installStatuses,
