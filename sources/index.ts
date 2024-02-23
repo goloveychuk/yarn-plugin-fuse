@@ -1,224 +1,491 @@
 import {
-  Hooks,
-  Plugin,
   structUtils,
-  Resolver,
-  ResolveOptions,
-  MinimalResolveOptions,
-  Locator,
-  SettingsType,
-  Package,
-  Descriptor,
-  FetchOptions,
-  Fetcher,
+  Report,
+  Manifest,
   miscUtils,
-  DescriptorHash,
+  formatUtils,
 } from '@yarnpkg/core';
-// import { PortablePath, xfs, NoFS, JailFS } from '@yarnpkg/fslib';
-import { parseResolution, Resolution } from '@yarnpkg/parsers';
+import {
+  Locator,
+  Package,
+  FinalizeInstallStatus,
+  hashUtils,
+} from '@yarnpkg/core';
+import {
+  Linker,
+  LinkOptions,
+  MinimalLinkOptions,
+  LinkType,
+  WindowsLinkType,
+} from '@yarnpkg/core';
+import {
+  LocatorHash,
+  Descriptor,
+  DependencyMeta,
+  Configuration,
+} from '@yarnpkg/core';
+import { MessageName, Project, FetchResult, Installer } from '@yarnpkg/core';
+import { PortablePath, npath, ppath, Filename } from '@yarnpkg/fslib';
+import { VirtualFS, xfs, FakeFS, NativePath } from '@yarnpkg/fslib';
+import { ZipOpenFS } from '@yarnpkg/libzip';
+import { buildNodeModulesTree, NodeModulesTree } from '@yarnpkg/nm';
+import {
+  NodeModulesLocatorMap,
+  buildLocatorMap,
+  NodeModulesHoistingLimits,
+} from '@yarnpkg/nm';
+import { parseSyml } from '@yarnpkg/parsers';
+import { jsInstallUtils } from '@yarnpkg/plugin-pnp';
+import { PnpApi, PackageInformation } from '@yarnpkg/pnp';
+import { FuseData, FuseNode } from './types';
 
-const PROTOCOL = `ignoreDeps:`;
+type LocatorKey = string;
 
-function getOriginalDescriptor(desc: Descriptor) {
-  const { source } = structUtils.parseRange(desc.range);
-  return structUtils.parseDescriptor(source);
+type UnboxPromise<T extends Promise<any>> = T extends Promise<infer U>
+  ? U
+  : never;
+type CustomPackageData = UnboxPromise<
+  ReturnType<typeof extractCustomPackageData>
+>;
+
+function isLinkLocator(locatorKey: LocatorKey): boolean {
+  let descriptor = structUtils.parseDescriptor(locatorKey);
+  if (structUtils.isVirtualDescriptor(descriptor))
+    descriptor = structUtils.devirtualizeDescriptor(descriptor);
+
+  return descriptor.range.startsWith(`link:`);
 }
 
-function addProtocolToDescriptor(desc: Descriptor) {
-  return structUtils.makeDescriptor(
-    desc,
-    structUtils.makeRange({
-      protocol: PROTOCOL,
-      source: structUtils.stringifyDescriptor(desc),
-      selector: '',
-      params: null,
-    }),
-  );
+function buildFuseTree(tree: NodeModulesTree) {
+  const result: FuseData = { roots: {} };
+
+  for (const [key, value] of tree.entries()) {
+
+    const parts = key.split(ppath.sep);
+    const nmIndex = parts.indexOf(`node_modules`);
+    if (nmIndex === -1) continue;
+    const mountpoint = parts.slice(0, nmIndex + 1).join(ppath.sep);
+    const path = [mountpoint, ...parts.slice(nmIndex + 1)];
+    const last = path.pop();
+    let current = result.roots;
+    if ('linkType' in value) {
+      if (value.linkType === LinkType.HARD && value.target.includes('.zip')) {
+        for (const p of path) {
+          if (!current[p]) {
+            current[p] = { ch: {}, type: 'dir' };
+          }
+          current = current[p].ch;
+        }
+        current[last] = { ch: {}, zipPath: value.target, type: 'zip' };
+      }
+    }
+  }
+  return result;
 }
 
-function getOriginalLocator(loc: Locator) {
-  const { source } = structUtils.parseRange(loc.reference);
-  return structUtils.parseLocator(source);
+async function extractCustomPackageData(
+  pkg: Package,
+  fetchResult: FetchResult,
+) {
+  const manifest =
+    (await Manifest.tryFind(fetchResult.prefixPath, {
+      baseFs: fetchResult.packageFs,
+    })) ?? new Manifest();
+
+  const preservedScripts = new Set([`preinstall`, `install`, `postinstall`]);
+  for (const scriptName of manifest.scripts.keys())
+    if (!preservedScripts.has(scriptName)) manifest.scripts.delete(scriptName);
+
+  return {
+    manifest: {
+      bin: manifest.bin,
+      scripts: manifest.scripts,
+    },
+    misc: {
+      hasBindingGyp: jsInstallUtils.hasBindingGyp(fetchResult),
+    },
+  };
 }
 
-function addProtocolToLocator(loc: Locator) {
-  return structUtils.makeLocator(
-    loc,
-    structUtils.makeRange({
-      protocol: PROTOCOL,
-      source: structUtils.stringifyLocator(loc),
-      selector: '',
-      params: null,
-    }),
-  );
-}
+class FuseInstaller implements Installer {
+  private localStore: Map<
+    LocatorHash,
+    {
+      pkg: Package;
+      customPackageData: CustomPackageData;
+      dependencyMeta: DependencyMeta;
+      pnpNode: PackageInformation<NativePath>;
+    }
+  > = new Map();
 
-class IgnoreDepsResolver implements Resolver {
-  supportsDescriptor(descriptor: Descriptor, opts: MinimalResolveOptions) {
-    if (!descriptor.range.startsWith(PROTOCOL)) return false;
-    return true;
+  private realLocatorChecksums: Map<LocatorHash, string | null> = new Map();
+
+  constructor(private opts: LinkOptions) {
+    // Nothing to do
   }
 
-  supportsLocator(locator: Locator, opts: MinimalResolveOptions) {
-    if (!locator.reference.startsWith(PROTOCOL)) return false;
-    return true;
+  private customData: {
+    store: Map<LocatorHash, CustomPackageData>;
+  } = {
+    store: new Map(),
+  };
+
+  attachCustomData(customData: any) {
+    this.customData = customData;
   }
 
-  shouldPersistResolution(locator: Locator, opts: MinimalResolveOptions) {
-    return opts.resolver.shouldPersistResolution(
-      getOriginalLocator(locator),
-      opts,
+  async installPackage(pkg: Package, fetchResult: FetchResult) {
+    const packageLocation = ppath.resolve(
+      fetchResult.packageFs.getRealPath(),
+      fetchResult.prefixPath,
     );
-  }
 
-  bindDescriptor(
-    _descriptor: Descriptor,
-    fromLocator: Locator,
-    opts: MinimalResolveOptions,
-  ) {
-    const descriptor = getOriginalDescriptor(_descriptor);
-    return addProtocolToDescriptor(
-      opts.resolver.bindDescriptor(descriptor, fromLocator, opts),
-    );
-  }
+    let customPackageData = this.customData.store.get(pkg.locatorHash);
+    if (typeof customPackageData === `undefined`) {
+      customPackageData = await extractCustomPackageData(pkg, fetchResult);
+      if (pkg.linkType === LinkType.HARD) {
+        this.customData.store.set(pkg.locatorHash, customPackageData);
+      }
+    }
 
-  getResolutionDependencies(
-    //todo check docs!!!
-    _descriptor: Descriptor,
-    opts: MinimalResolveOptions,
-  ) {
-    const descriptor = getOriginalDescriptor(_descriptor);
-    return opts.resolver.getResolutionDependencies(descriptor, opts);
-  }
+    // We don't link the package at all if it's for an unsupported platform
+    if (
+      !structUtils.isPackageCompatible(
+        pkg,
+        this.opts.project.configuration.getSupportedArchitectures(),
+      )
+    )
+      return { packageLocation: null, buildRequest: null };
 
-  async getCandidates(
-    _descriptor: Descriptor,
-    dependencies: Record<string, Package>, opts: ResolveOptions
-  ) {
-    const descriptor = getOriginalDescriptor(_descriptor);
-    return (
-      await opts.resolver.getCandidates(descriptor, dependencies, opts)
-    ).map(addProtocolToLocator);
-  }
+    const packageDependencies = new Map<
+      string,
+      string | [string, string] | null
+    >();
+    const packagePeers = new Set<string>();
 
-  async getSatisfying(
-    _descriptor: Descriptor,
-    dependencies: Record<string, Package>, locators: Array<Locator>, opts: ResolveOptions
-  ) {
-    const descriptor = getOriginalDescriptor(_descriptor);
-    return opts.resolver.getSatisfying(descriptor, dependencies, locators, opts);
-  }
+    if (!packageDependencies.has(structUtils.stringifyIdent(pkg)))
+      packageDependencies.set(structUtils.stringifyIdent(pkg), pkg.reference);
 
-  async resolve(_locator: Locator, opts: ResolveOptions): Promise<Package> {
-    const locator = getOriginalLocator(_locator);
-    const sourcePkg = await opts.resolver.resolve(locator, opts);
+    let realLocator: Locator = pkg;
+    // Only virtual packages should have effective peer dependencies, but the
+    // workspaces are a special case because the original packages are kept in
+    // the dependency tree even after being virtualized; so in their case we
+    // just ignore their declared peer dependencies.
+    if (structUtils.isVirtualLocator(pkg)) {
+      realLocator = structUtils.devirtualizeLocator(pkg);
+      for (const descriptor of pkg.peerDependencies.values()) {
+        packageDependencies.set(structUtils.stringifyIdent(descriptor), null);
+        packagePeers.add(structUtils.stringifyIdent(descriptor));
+      }
+    }
+
+    const pnpNode: PackageInformation<NativePath> = {
+      packageLocation: `${npath.fromPortablePath(packageLocation)}/`,
+      packageDependencies,
+      packagePeers,
+      linkType: pkg.linkType,
+      discardFromLookup: fetchResult.discardFromLookup ?? false,
+    };
+
+    this.localStore.set(pkg.locatorHash, {
+      pkg,
+      customPackageData,
+      dependencyMeta: this.opts.project.getDependencyMeta(pkg, pkg.version),
+      pnpNode,
+    });
+
+    // We need ZIP contents checksum for CAS addressing purposes, so we need to strip cache key from checksum here
+    const checksum = fetchResult.checksum
+      ? fetchResult.checksum.substring(fetchResult.checksum.indexOf(`/`) + 1)
+      : null;
+    this.realLocatorChecksums.set(realLocator.locatorHash, checksum);
+
     return {
-      ...sourcePkg,
-      ..._locator,
-      peerDependencies: new Map(),
-      dependencies: new Map(),
+      packageLocation,
+      buildRequest: null,
+    };
+  }
+
+  async attachInternalDependencies(
+    locator: Locator,
+    dependencies: Array<[Descriptor, Locator]>,
+  ) {
+    const slot = this.localStore.get(locator.locatorHash);
+    if (typeof slot === `undefined`)
+      throw new Error(
+        `Assertion failed: Expected information object to have been registered`,
+      );
+
+    for (const [descriptor, locator] of dependencies) {
+      const target = !structUtils.areIdentsEqual(descriptor, locator)
+        ? ([structUtils.stringifyIdent(locator), locator.reference] as [
+            string,
+            string,
+          ])
+        : locator.reference;
+
+      slot.pnpNode.packageDependencies.set(
+        structUtils.stringifyIdent(descriptor),
+        target,
+      );
+    }
+  }
+
+  async attachExternalDependents(
+    locator: Locator,
+    dependentPaths: Array<PortablePath>,
+  ) {
+    throw new Error(
+      `External dependencies haven't been implemented for the fuse linker`,
+    );
+  }
+
+  async finalizeInstall() {
+    if (this.opts.project.configuration.get(`nodeLinker`) !== `fuse`)
+      return undefined;
+
+    const defaultFsLayer = new VirtualFS({
+      baseFs: new ZipOpenFS({
+        maxOpenFiles: 80,
+        readOnlyArchives: true,
+      }),
+    });
+
+    // let preinstallState = await findInstallState(this.opts.project);
+    // const nmModeSetting = this.opts.project.configuration.get(`nmMode`);
+
+    // // Remove build state as well, to force rebuild of all the packages
+    // if (preinstallState === null || nmModeSetting !== preinstallState.nmMode) {
+    //   this.opts.project.storedBuildState.clear();
+
+    //   preinstallState = {locatorMap: new Map(), binSymlinks: new Map(), locationTree: new Map(), nmMode: nmModeSetting, mtimeMs: 0};
+    // }
+
+    const hoistingLimitsByCwd = new Map(
+      this.opts.project.workspaces.map((workspace) => {
+        let hoistingLimits = this.opts.project.configuration.get(
+          `nmHoistingLimits`,
+        ) as string;
+        try {
+          hoistingLimits = miscUtils.validateEnum(
+            NodeModulesHoistingLimits,
+            workspace.manifest.installConfig?.hoistingLimits ?? hoistingLimits,
+          );
+        } catch (e) {
+          const workspaceName = structUtils.prettyWorkspace(
+            this.opts.project.configuration,
+            workspace,
+          );
+          this.opts.report.reportWarning(
+            MessageName.INVALID_MANIFEST,
+            `${workspaceName}: Invalid 'installConfig.hoistingLimits' value. Expected one of ${Object.values(
+              NodeModulesHoistingLimits,
+            ).join(`, `)}, using default: "${hoistingLimits}"`,
+          );
+        }
+        return [workspace.relativeCwd, hoistingLimits];
+      }),
+    );
+
+    const selfReferencesByCwd = new Map(
+      this.opts.project.workspaces.map((workspace) => {
+        let selfReferences =
+          this.opts.project.configuration.get(`nmSelfReferences`);
+        selfReferences =
+          workspace.manifest.installConfig?.selfReferences ?? selfReferences;
+        return [workspace.relativeCwd, selfReferences];
+      }),
+    );
+
+    const pnpApi: PnpApi = {
+      VERSIONS: {
+        std: 1,
+      },
+      topLevel: {
+        name: null,
+        reference: null,
+      },
+      getLocator: (name, referencish) => {
+        if (Array.isArray(referencish)) {
+          return { name: referencish[0], reference: referencish[1] };
+        } else {
+          return { name, reference: referencish };
+        }
+      },
+      getDependencyTreeRoots: () => {
+        return this.opts.project.workspaces.map((workspace) => {
+          const anchoredLocator = workspace.anchoredLocator;
+          return {
+            name: structUtils.stringifyIdent(anchoredLocator),
+            reference: anchoredLocator.reference,
+          };
+        });
+      },
+      getPackageInformation: (pnpLocator) => {
+        const locator =
+          pnpLocator.reference === null
+            ? this.opts.project.topLevelWorkspace.anchoredLocator
+            : structUtils.makeLocator(
+                structUtils.parseIdent(pnpLocator.name),
+                pnpLocator.reference,
+              );
+
+        const slot = this.localStore.get(locator.locatorHash);
+        if (typeof slot === `undefined`)
+          throw new Error(
+            `Assertion failed: Expected the package reference to have been registered`,
+          );
+
+        return slot.pnpNode;
+      },
+      findPackageLocator: (location) => {
+        const workspace = this.opts.project.tryWorkspaceByCwd(
+          npath.toPortablePath(location),
+        );
+        if (workspace !== null) {
+          const anchoredLocator = workspace.anchoredLocator;
+          return {
+            name: structUtils.stringifyIdent(anchoredLocator),
+            reference: anchoredLocator.reference,
+          };
+        }
+
+        throw new Error(`Assertion failed: Unimplemented`);
+      },
+      resolveToUnqualified: () => {
+        throw new Error(`Assertion failed: Unimplemented`);
+      },
+      resolveUnqualified: () => {
+        throw new Error(`Assertion failed: Unimplemented`);
+      },
+      resolveRequest: () => {
+        throw new Error(`Assertion failed: Unimplemented`);
+      },
+      resolveVirtual: (path) => {
+        return npath.fromPortablePath(
+          VirtualFS.resolveVirtual(npath.toPortablePath(path)),
+        );
+      },
+    };
+
+    const { tree, errors, preserveSymlinksRequired } = buildNodeModulesTree(
+      pnpApi,
+      {
+        pnpifyFs: false,
+        validateExternalSoftLinks: true,
+        hoistingLimitsByCwd,
+        project: this.opts.project,
+        selfReferencesByCwd,
+      },
+    );
+    if (!tree) {
+      for (const { messageName, text } of errors)
+        this.opts.report.reportError(messageName, text);
+
+      return undefined;
+    }
+    const locatorMap = buildLocatorMap(tree);
+    const installStatePath = ppath.join(
+      this.opts.project.cwd,
+      `.yarn/fuse-state.json`,
+    );
+    // console.log(locatorMap);
+
+    const fuseState = buildFuseTree(tree);
+    // console.log(tree)
+    await xfs.changeFilePromise(
+      installStatePath,
+      JSON.stringify(fuseState, null, 2),
+      {},
+    );
+    
+
+    // await persistNodeModules(preinstallState, locatorMap, {
+    //   baseFs: defaultFsLayer,
+    //   project: this.opts.project,
+    //   report: this.opts.report,
+    //   realLocatorChecksums: this.realLocatorChecksums,
+    //   loadManifest: async locatorKey => {
+    //     const locator = structUtils.parseLocator(locatorKey);
+
+    //     const slot = this.localStore.get(locator.locatorHash);
+    //     if (typeof slot === `undefined`)
+    //       throw new Error(`Assertion failed: Expected the slot to exist`);
+
+    //     return slot.customPackageData.manifest;
+    //   },
+    // });
+
+    const installStatuses: Array<FinalizeInstallStatus> = [];
+
+    for (const [locatorKey, installRecord] of locatorMap.entries()) {
+      if (isLinkLocator(locatorKey)) continue;
+
+      const locator = structUtils.parseLocator(locatorKey);
+      const slot = this.localStore.get(locator.locatorHash);
+      if (typeof slot === `undefined`)
+        throw new Error(`Assertion failed: Expected the slot to exist`);
+
+      // Workspaces are built by the core
+      if (this.opts.project.tryWorkspaceByLocator(slot.pkg)) continue;
+
+      const buildRequest = jsInstallUtils.extractBuildRequest(
+        slot.pkg,
+        slot.customPackageData,
+        slot.dependencyMeta,
+        { configuration: this.opts.project.configuration },
+      );
+      if (!buildRequest) continue;
+
+      installStatuses.push({
+        buildLocations: installRecord.locations,
+        locator,
+        buildRequest,
+      });
+    }
+
+    if (preserveSymlinksRequired)
+      this.opts.report.reportWarning(
+        MessageName.NM_PRESERVE_SYMLINKS_REQUIRED,
+        `The application uses portals and that's why ${formatUtils.pretty(
+          this.opts.project.configuration,
+          `--preserve-symlinks`,
+          formatUtils.Type.CODE,
+        )} Node option is required for launching it`,
+      );
+
+    console.log(installStatuses);
+    console.log(this.customData);
+    return {
+      customData: this.customData,
+      records: installStatuses,
     };
   }
 }
+class FuseLinker implements Linker {
+  supportsPackage(pkg: Package, opts: MinimalLinkOptions): boolean {
+    return this.isEnabled(opts);
+  }
+  async findPackageLocation(locator: Locator, opts: LinkOptions) {}
 
-class IgnoreDepsFetcher implements Fetcher {
-  supports(locator: Locator) {
-    if (locator.reference.startsWith(PROTOCOL)) return true;
-
-    return false;
+  async findPackageLocator(location: PortablePath, opts: LinkOptions) {}
+  getCustomDataKey(): string {
+    return JSON.stringify({
+      name: `Fuse`,
+      version: 1,
+    });
   }
 
-  getLocalPath(locator: Locator, opts: FetchOptions) {
-    return opts.fetcher.getLocalPath(getOriginalLocator(locator), opts);
+  private isEnabled(opts: MinimalLinkOptions) {
+    return opts.project.configuration.get(`nodeLinker`) === `fuse`;
   }
-
-  async fetch(locator: Locator, opts: FetchOptions) {
-    return opts.fetcher.fetch(getOriginalLocator(locator), opts);
-    // const tempDir = await xfs.mktempPromise();
-    // const p = tempDir as PortablePath;
-    // return {
-    //   packageFs: new JailFS(p),
-    //   prefixPath: PortablePath.dot,
-    // };
-  }
-}
-
-function isMatched(
-  pattern: Resolution,
-  dependency: Descriptor,
-  locator: Locator,
-) {
-  if (pattern.from) {
-    if (pattern.from.fullName !== '*') {
-      if (pattern.from.fullName !== structUtils.stringifyIdent(locator)) {
-        return false;
-      }
-    }
-  }
-  if (pattern.descriptor.fullName === '*') {
-    return true;
-  }
-  return pattern.descriptor.fullName === structUtils.stringifyIdent(dependency);
-}
-const memo = (() => {
-  const map = new WeakMap();
-  return <K extends object, T extends object>(k: K, fn: (k: K) => T): T => {
-    if (!map.has(k)) {
-      map.set(k, fn(k));
-    }
-    return map.get(k);
-  };
-})();
-
-const hooks: Hooks = {
-  async reduceDependency(
-    dependency,
-    project,
-    locator, //parent
-    initialDependency,
-    extra,
-  ) {
-    const ignoreDepsOf = memo(
-      project.configuration.get('ignoreDependencies').get('depsOf'),
-      (deps) => deps.map(parseResolution),
-    );
-
-    for (const pattern of ignoreDepsOf) {
-      // https://github.com/yarnpkg/berry/blob/bdd107579b76a71970a61c2cce46a5d4b51ca596/packages/yarnpkg-core/sources/CorePlugin.ts#L17
-      if (isMatched(pattern, dependency, locator)) {
-        return addProtocolToDescriptor(dependency);
-      }
-    }
-    return dependency;
-  },
-};
-
-declare module '@yarnpkg/core' {
-  interface ConfigurationValueMap {
-    ignoreDependencies: miscUtils.ToMapValue<{
-      depsOf: Array<string>;
-    }>;
+  makeInstaller(opts: LinkOptions): Installer {
+    return new FuseInstaller(opts);
   }
 }
 
 const plugin: Plugin = {
-  configuration: {
-    ignoreDependencies: {
-      type: SettingsType.SHAPE,
-      description: 'Ignore packages',
-      properties: {
-        depsOf: {
-          description: ``,
-          default: [],
-          isArray: true,
-          type: SettingsType.STRING,
-        },
-      },
-    },
-  },
-  hooks,
-  resolvers: [IgnoreDepsResolver],
-  fetchers: [IgnoreDepsFetcher],
+  linkers: [FuseLinker],
   commands: [],
 };
 
