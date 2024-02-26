@@ -1,0 +1,9 @@
+
+mkdir
+rm -r 
+rm
+stat 
+mv  node_modules/lodash/README.md node_modules/lodash/README2.md
+mv  node_modules/lodash/chain/ node_modules/lodash/README2
+
+not impl

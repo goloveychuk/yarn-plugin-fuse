@@ -1,0 +1,136 @@
+// Copyright 2016 the Go-FUSE Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// This program is the analogon of libfuse's hello.c, a a program that
+// exposes a single file "file.txt" in the root directory.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"math/rand"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/hanwen/go-fuse/v2/fs"
+	"github.com/hanwen/go-fuse/v2/fuse"
+)
+
+type DependencyRoot struct {
+	fs.Inode
+}
+
+func generateRandom(b int) []byte {
+	var result []byte
+	for i := 0; i < b; i++ {
+		result = append(result, byte(rand.Intn(26)+65))
+	}
+	return result
+}
+
+func (r *DependencyRoot) OnAdd(ctx context.Context) {
+
+	for ind := 0; ind < 10000; ind++ {
+
+		ch := r.NewPersistentInode(ctx, &fs.MemRegularFile{
+			Data: generateRandom(1024),
+			Attr: fuse.Attr{
+				Mode: 0644,
+			},
+		}, fs.StableAttr{})
+		r.AddChild(fmt.Sprintf("test%d.js", ind), ch, false)
+	}
+
+	// ch := r.NewPersistentInode(
+	// 	ctx, &fs.MemRegularFile{
+	// 		Data: []byte("file.txt"),
+	// 		Attr: fuse.Attr{
+	// 			Mode: 0644,
+	// 		},
+	// 	}, fs.StableAttr{Ino: 2})
+	// r.AddChild("file.txt", ch, false)
+}
+
+// func (r *DependencyRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+
+// 	println("Lookup called", name)
+// 	// go func() {
+// 	// 	// wait 3 seconds
+// 	// 	r.ch <- struct{}{}
+// 	// }()
+// 	// <-r.ch
+// 	if name == "file.txt" {
+// 		time.Sleep(5 * time.Second)
+// 		ch := r.NewPersistentInode(
+// 			ctx, &fs.MemRegularFile{
+// 				Data: []byte("content"),
+// 				Attr: fuse.Attr{
+// 					Mode: 0644,
+// 				},
+// 			}, fs.StableAttr{Ino: 2})
+// 		return r.NewInode(ctx, ch, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+// 	}
+// 	return nil, syscall.ENOENT
+
+// }
+
+// func (r *DependencyRoot) Read(ctx context.Context, fh fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+// 	s := "Hello, World!\n"
+// 	println("Read called")
+// 	n := copy(dest, s[off:])
+// 	return fuse.ReadResultData(dest[:n]), 0
+// }
+
+func (r *DependencyRoot) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = 0755
+	return 0
+}
+
+var _ = (fs.NodeGetattrer)((*DependencyRoot)(nil))
+var _ = (fs.NodeOnAdder)((*DependencyRoot)(nil))
+
+// var _ = (fs.NodeLookuper)((*DependencyRoot)(nil))
+
+// var _ = (fs.NodeReader)((*DependencyRoot)(nil))
+
+func main() {
+	debug := flag.Bool("debug", false, "print debug data")
+	// flag.Parse()
+	// if len(flag.Args()) < 1 {
+	// 	log.Fatal("Usage:\n  hello MOUNTPOINT")
+	// }
+	servers := []*fuse.Server{}
+	mount := "./mounts/fusetest2"
+	println("Mounting", mount)
+	opts := &fs.Options{}
+	opts.Debug = *debug
+
+	server, err := fs.Mount(mount, &DependencyRoot{}, opts)
+	if err != nil {
+		log.Fatalf("Mount fail: %v\n", err)
+	}
+	println("Mounted!", mount)
+	defer server.Unmount()
+	servers = append(servers, server)
+
+	c := make(chan os.Signal, 10)
+
+	go func() {
+		<-c
+		print("unmounting\n")
+		for _, server := range servers {
+			server.Unmount()
+		}
+		os.Remove(flag.Arg(0))
+		os.Exit(1)
+	}()
+
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	server.Wait()
+	// for {
+	// }
+}

@@ -4,6 +4,8 @@ import {
   Manifest,
   miscUtils,
   formatUtils,
+  Plugin,
+  Hooks,
 } from '@yarnpkg/core';
 import {
   Locator,
@@ -61,6 +63,7 @@ function isLinkLocator(locatorKey: LocatorKey): boolean {
   return descriptor.range.startsWith(`link:`);
 }
 
+//todo copy getBuildHash
 type LocationNode = {
   children: Map<Filename, LocationNode>;
   locator?: LocatorKey;
@@ -741,9 +744,13 @@ class FuseLinker implements Linker {
   supportsPackage(pkg: Package, opts: MinimalLinkOptions): boolean {
     return this.isEnabled(opts);
   }
-  async findPackageLocation(locator: Locator, opts: LinkOptions) {}
+  async findPackageLocation(locator: Locator, opts: LinkOptions) {
+    console.error(locator);
+  }
 
-  async findPackageLocator(location: PortablePath, opts: LinkOptions) {}
+  async findPackageLocator(location: PortablePath, opts: LinkOptions) {
+    console.error(locator);
+  }
   getCustomDataKey(): string {
     return JSON.stringify({
       name: `Fuse`,
@@ -759,9 +766,14 @@ class FuseLinker implements Linker {
   }
 }
 
-const plugin: Plugin = {
+const plugin: Plugin<Hooks> = {
   linkers: [FuseLinker],
   commands: [],
+  hooks: {
+    afterAllInstalled(project, options) {
+      
+    },
+  },
 };
 
 export default plugin;
