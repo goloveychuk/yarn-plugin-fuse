@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,8 +21,9 @@ import (
 
 type ZipRoot struct {
 	zipDir
-	stripPrefix    string
-	zr             *zip.ReadCloser
+	stripPrefix string
+	// zr             *zip.ReadCloser
+	zipPath        string
 	staticChildren map[string]bool //arr?
 	zipIsOpened    bool
 }
@@ -101,7 +103,13 @@ func (zr *ZipRoot) openZip(ctx context.Context) {
 		return
 	}
 	fmt.Println("openZip")
-	for _, f := range zr.zr.File {
+	r, err := zip.OpenReader(zr.zipPath)
+	if err != nil {
+		log.Fatalf("zip.Open(%q) failed: %v", zr.zipPath, err) //todo
+	}
+
+	// zr.zr = r
+	for _, f := range r.File {
 
 		cleaned := filepath.Clean(f.Name)
 		if !strings.HasPrefix(cleaned, zr.stripPrefix) {
@@ -142,13 +150,8 @@ func (zr *ZipRoot) openZip(ctx context.Context) {
 
 // NewZipTree creates a new file-system for the zip file named name.
 func NewZipTree(name string, stripPrefix string) (*ZipRoot, error) {
-	r, err := zip.OpenReader(name)
-	if err != nil {
-		return nil, err
-	}
-
 	stripPrefix = filepath.Clean(stripPrefix)
-	return &ZipRoot{zr: r, stripPrefix: stripPrefix, staticChildren: make(map[string]bool)}, nil
+	return &ZipRoot{zipPath: name, stripPrefix: stripPrefix, staticChildren: make(map[string]bool)}, nil
 }
 
 // zipFile is a file read from a zip archive.

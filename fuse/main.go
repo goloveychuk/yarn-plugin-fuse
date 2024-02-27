@@ -10,15 +10,21 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/pkg/profile"
 )
 
 type DependencyRoot struct {
@@ -94,7 +100,22 @@ type FuseData struct {
 	Roots map[string]*DependencyRoot
 }
 
+func runGCInterval(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		for range ticker.C {
+			fmt.Println("GC")
+			runtime.GC()
+		}
+	}()
+}
+
 func main() {
+
+	defer profile.Start(profile.MemProfile).Stop()
+	go func() {
+		http.ListenAndServe(":8080", nil)
+	}()
 	debug := flag.Bool("debug", false, "print debug data")
 	flag.Parse()
 	if len(flag.Args()) < 1 {
@@ -130,6 +151,7 @@ func main() {
 			}
 		}
 		opts := &fs.Options{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}
+
 		opts.Debug = *debug
 		if err != nil {
 			log.Fatalf("Unmarshal fail: %v\n", err)
@@ -157,6 +179,7 @@ func main() {
 			println("unmounting\n", server)
 			server.Unmount()
 		}
+
 		os.Exit(1)
 	}
 
@@ -166,5 +189,6 @@ func main() {
 	}()
 
 	signal.Notify(close, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+	runGCInterval(5 * time.Second)
 	select {}
 }
