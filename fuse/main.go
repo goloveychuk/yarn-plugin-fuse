@@ -112,14 +112,18 @@ func runGCInterval(interval time.Duration) {
 
 func main() {
 
-	defer profile.Start(profile.MemProfile).Stop()
-	go func() {
-		http.ListenAndServe(":8080", nil)
-	}()
 	debug := flag.Bool("debug", false, "print debug data")
+	prof := flag.Bool("prof", false, "open profile server")
+
 	flag.Parse()
 	if len(flag.Args()) < 1 {
 		log.Fatal("Usage:\n  hello MOUNTPOINT")
+	}
+	if *prof {
+		defer profile.Start(profile.MemProfile).Stop()
+		go func() {
+			http.ListenAndServe(":8080", nil)
+		}()
 	}
 	configPath := flag.Arg(0)
 	data, err := os.ReadFile(configPath)
@@ -152,7 +156,9 @@ func main() {
 		}
 		opts := &fs.Options{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}
 
+		opts.MaxBackground = 30
 		opts.Debug = *debug
+
 		if err != nil {
 			log.Fatalf("Unmarshal fail: %v\n", err)
 		}

@@ -102,6 +102,15 @@ func (zr *ZipRoot) openZip(ctx context.Context) {
 	if zr.zipIsOpened {
 		return
 	}
+	// ticker := time.NewTicker(time.Second * 5)
+	// go func() {
+	// 	for range ticker.C {
+	// 		if zr.Forgotten() {
+	// 			fmt.Println("forgotten", zr.zipPath)
+	// 		}
+	// 		// runtime.GC()
+	// 	}
+	// }()
 	fmt.Println("openZip")
 	r, err := zip.OpenReader(zr.zipPath)
 	if err != nil {
