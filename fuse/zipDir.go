@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path"
 	"syscall"
 
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -10,39 +11,75 @@ import (
 
 type zipDir struct {
 	fs.Inode
+	root *ZipRoot
+	path string
 	// children map[string]fs.InodeEmbedder
 }
 
 var _ = (fs.NodeGetattrer)((*zipDir)(nil))
 
-// var _ = (fs.NodeLookuper)((*zipDir)(nil))
+var _ = (fs.NodeLookuper)((*zipDir)(nil))
+
 // var _ = (fs.NodeReaddirer)((*zipDir)(nil))
 
 // var _ = (fs.NodeSetattrer)((*zipDir)(nil))
 // var _ = (fs.NodeRenamer)((*zipDir)(nil))
 
-// func (zr *zipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-// 	// if !zr.staticChildren[name] {
-// 	// 	zr.openZip(ctx)
-// 	// }
-// 	ch := zr.GetChild(name)
-// 	if ch == nil {
-// 		return nil, syscall.ENOENT
-// 	}
-// 	return ch, 0
-// }
+func (zr *zipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	// if !zr.staticChildren[name] {
+	// 	zr.openZip(ctx)
+	// }
 
-// func (r *zipDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-// 	lst := make([]fuse.DirEntry, 0, len(r.children))
-// 	for name, e := range r.children {
-// 		lst = append(lst, fuse.DirEntry{
-// 			Mode: e.EmbeddedInode().Mode(),
-// 			Name: name,
-// 			Ino:  e.EmbeddedInode().StableAttr().Ino,
-// 		})
-// 	}
-// 	return fs.NewListDirStream(lst), 0
-// }
+	zip, err := zr.root.zipGetter.GetZip(zr.root.zipPath, zr.root.stripPrefix, zr.root.inoStart)
+	if err != nil {
+		return nil, syscall.ENOENT
+	}
+
+	if ch, ok := zip.chMap[zr.path]; ok {
+		d, ok := ch[name]
+		if !ok {
+			return nil, syscall.ENOENT
+		}
+		fullPath := path.Join(zr.path, name)
+		if d.typ == DIR {
+			ch := zr.NewInode(ctx, newZipDir(zr.root, fullPath), fs.StableAttr{Mode: fuse.S_IFDIR, Ino: d.ino}) //ino
+			return ch, 0
+		}
+		ch := zr.NewInode(ctx, &zipFile{attr: zip.filesData[fullPath].attr}, fs.StableAttr{Mode: fuse.S_IFREG, Ino: d.ino}) //ino
+		return ch, 0
+	}
+
+	return nil, syscall.ENOENT
+
+}
+
+func (r *zipDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	zip, err := r.root.zipGetter.GetZip(r.root.zipPath, r.root.stripPrefix, r.root.inoStart)
+	if err != nil {
+		return nil, syscall.ENOENT
+	}
+	if ch, ok := zip.chMap[r.path]; ok {
+		lst := make([]fuse.DirEntry, len(ch))
+		ind := 0
+		for name, d := range ch {
+			var mode uint32
+			if d.typ == DIR {
+				mode = fuse.S_IFDIR
+			} else if d.typ == FILE {
+				mode = fuse.S_IFREG
+			}
+			lst[ind] = fuse.DirEntry{
+				Mode: mode,
+				Name: name,
+				Ino:  d.ino,
+			}
+			ind += 1
+		}
+		return fs.NewListDirStream(lst), 0
+	}
+	return nil, syscall.ENOENT
+
+}
 
 func (r *zipDir) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	// out.Mode = 0755
@@ -50,8 +87,10 @@ func (r *zipDir) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOu
 	return 0
 }
 
-func NewZipDir() *zipDir {
+func newZipDir(root *ZipRoot, path string) *zipDir {
 	return &zipDir{
+		root: root,
+		path: path,
 		// children: make(map[string]fs.InodeEmbedder)
 	}
 }

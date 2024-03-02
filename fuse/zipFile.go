@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/zip"
 	"context"
 	"fmt"
 	"sync"
@@ -21,20 +20,6 @@ type zipFile struct {
 
 var _ = (fs.NodeOpener)((*zipFile)(nil))
 var _ = (fs.NodeGetattrer)((*zipFile)(nil))
-
-func getZFAttrs(f *zip.File) fuse.Attr {
-	t := uint64(f.ModTime().Unix())
-	const bs = 512 //why?
-	return fuse.Attr{
-		Mode:    uint32(f.Mode()) & 07777,
-		Size:    f.UncompressedSize64,
-		Mtime:   t,
-		Atime:   t,
-		Ctime:   t,
-		Blksize: bs,
-		Blocks:  (f.UncompressedSize64 + bs - 1) / bs,
-	}
-}
 
 func (zf *zipFile) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Attr = zf.attr

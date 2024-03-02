@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -27,11 +28,18 @@ import (
 	"github.com/pkg/profile"
 )
 
+var zg *zipGetter
+
+const INO_STEP = uint64(1_000_000_000)
+
+var last_ino = uint64(0)
+
 type DependencyRoot struct {
 	fs.Inode
 	LinkType string                     //SOFT HARD
 	Children map[string]*DependencyRoot //mb should be ref
 	Target   string
+	inoStart uint64
 }
 
 var _ = (fs.NodeGetattrer)((*DependencyRoot)(nil))
@@ -94,12 +102,22 @@ func getMode(dep *DependencyRoot) uint32 {
 	}
 }
 
+func (r *DependencyRoot) getInoStart() uint64 {
+	if r.inoStart == 0 {
+		newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
+		r.inoStart = newInoStart
+	}
+
+	return r.inoStart
+}
+
 func (r *DependencyRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	dep, ok := r.Children[name]
 	if !ok {
 		return nil, syscall.ENOENT
 	}
 	mode := getMode(dep)
+	ino := dep.getInoStart()
 	if dep.LinkType == "SOFT" {
 		if dep.Target == "" {
 			log.Fatalf("Target is empty for %s", name)
@@ -110,18 +128,18 @@ func (r *DependencyRoot) Lookup(ctx context.Context, name string, out *fuse.Entr
 		return ch, 0
 	} else {
 		if dep.Target == "" {
-			ch := r.NewInode(ctx, dep, fs.StableAttr{Mode: mode}) //could be inited multiple times (if ops.embed().bridge != nil {return ops.embed() })
+			ch := r.NewInode(ctx, dep, fs.StableAttr{Mode: mode, Ino: ino}) //could be inited multiple times (if ops.embed().bridge != nil {return ops.embed() })
 			return ch, 0
 		} else {
 			parts := strings.SplitN(dep.Target, ".zip/", 2)
 
-			root, err := NewZipTree(parts[0]+".zip", parts[1])
+			root, err := NewZipTree(zg, parts[0]+".zip", parts[1], ino+1) //carefull
 			if err != nil {
 				log.Fatal(err)
 			}
 
 			ch := r.NewInode(ctx, root,
-				fs.StableAttr{Mode: mode})
+				fs.StableAttr{Mode: mode, Ino: ino})
 			// r.AddChild(name, ch, false)
 			// addChildren(ctx, ch, dep.Children) //todo
 			// for name := range dep.Children {
@@ -186,7 +204,7 @@ func main() {
 		log.Fatal("Usage:\n  hello MOUNTPOINT")
 	}
 	if *prof {
-		defer profile.Start(profile.MemProfile).Stop()
+		defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")).Stop()
 		go func() {
 			http.ListenAndServe(":8080", nil)
 		}()
@@ -210,6 +228,7 @@ func main() {
 	// toMount = append(toMount, ToMount{"/tmp/dep", &ControlWrap{}})
 	close := make(chan os.Signal, 10)
 
+	zg = createZipGetter()
 	for _, mount := range toMount {
 		println("Mounting", mount.path)
 		if isExists(mount.path) {
@@ -221,6 +240,13 @@ func main() {
 			}
 		}
 		opts := &fs.Options{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}
+
+		timeout := 10 * time.Second
+		timeout2 := 10 * time.Second
+		// attrTimeout := 10 * time.Second
+		// opts.AttrTimeout = &attrTimeout
+		opts.EntryTimeout = &timeout
+		opts.NegativeTimeout = &timeout2
 
 		opts.MaxBackground = 30
 		opts.Debug = *debug
