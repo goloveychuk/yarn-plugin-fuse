@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"sync"
 	"syscall"
 
@@ -14,8 +13,8 @@ import (
 
 type zipFile struct {
 	fs.Inode
-	file *zip.File
-
+	// file *zip.File
+	attr fuse.Attr
 	mu   sync.Mutex
 	data []byte
 }
@@ -23,22 +22,22 @@ type zipFile struct {
 var _ = (fs.NodeOpener)((*zipFile)(nil))
 var _ = (fs.NodeGetattrer)((*zipFile)(nil))
 
-// var _ = (fs.NodeWriter)((*zipFile)(nil))
-// var _ = (fs.NodeSetattrer)((*zipFile)(nil))
+func getZFAttrs(f *zip.File) fuse.Attr {
+	t := uint64(f.ModTime().Unix())
+	const bs = 512 //why?
+	return fuse.Attr{
+		Mode:    uint32(f.Mode()) & 07777,
+		Size:    f.UncompressedSize64,
+		Mtime:   t,
+		Atime:   t,
+		Ctime:   t,
+		Blksize: bs,
+		Blocks:  (f.UncompressedSize64 + bs - 1) / bs,
+	}
+}
 
-// Getattr sets the minimum, which is the size. A more full-featured
-// FS would also set timestamps and permissions.
 func (zf *zipFile) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	out.Mode = uint32(zf.file.Mode()) & 07777
-	// out.Owner = fuse.Owner{Uid: uint32(os.Getuid()), Gid: uint32(os.Getgid())} // memo
-	out.Nlink = 1
-	out.Mtime = uint64(zf.file.ModTime().Unix())
-	out.Atime = out.Mtime
-	out.Ctime = out.Mtime
-	out.Size = zf.file.UncompressedSize64
-	const bs = 512
-	out.Blksize = bs
-	out.Blocks = (out.Size + bs - 1) / bs
+	out.Attr = zf.attr
 	return 0
 }
 
@@ -56,16 +55,16 @@ func (zf *zipFile) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint3
 		return nil, 0, 0
 	}
 	if zf.data == nil {
-		rc, err := zf.file.Open()
-		if err != nil {
-			return nil, 0, syscall.EIO
-		}
-		content, err := ioutil.ReadAll(rc)
-		if err != nil {
-			return nil, 0, syscall.EIO
-		}
+		// rc, err := zf.file.Open()
+		// if err != nil {
+		// 	return nil, 0, syscall.EIO
+		// }
+		// content, err := ioutil.ReadAll(rc)
+		// if err != nil {
+		// 	return nil, 0, syscall.EIO
+		// }
 
-		zf.data = content
+		// zf.data = content
 	} //todo clean
 
 	// We don't return a filehandle since we don't really need

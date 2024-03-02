@@ -67,7 +67,7 @@ func (zr *ZipRoot) openZip(ctx context.Context) {
 	// 		// runtime.GC()
 	// 	}
 	// }()
-	fmt.Println("openZip")
+	// fmt.Println("openZip")
 	r, err := zip.OpenReader(zr.zipPath)
 	if err != nil {
 		log.Fatalf("zip.Open(%q) failed: %v", zr.zipPath, err) //todo
@@ -105,13 +105,13 @@ func (zr *ZipRoot) openZip(ctx context.Context) {
 			p = ch
 		}
 		if base != "" {
-			zf := &zipFile{file: f}
+			zf := &zipFile{attr: getZFAttrs(f)}
 			ch := p.NewInode(ctx, zf, fs.StableAttr{})
 
 			p.AddChild(base, ch, true)
 		}
 	}
-	// r.Close()
+	r.Close()
 	// go func() {
 	// 	timer := time.NewTimer(time.Second * 5)
 

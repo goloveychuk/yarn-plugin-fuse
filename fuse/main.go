@@ -167,8 +167,11 @@ func runGCInterval(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	go func() {
 		for range ticker.C {
-			fmt.Println("GC")
+
 			runtime.GC()
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			fmt.Printf("Alloc = %v MiB\n", m.Alloc/1024/1024)
 		}
 	}()
 }
