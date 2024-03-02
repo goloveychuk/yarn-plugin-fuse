@@ -29,50 +29,113 @@ import (
 
 type DependencyRoot struct {
 	fs.Inode
-	LinkType string //SOFT HARD
-	Children map[string]*DependencyRoot
+	LinkType string                     //SOFT HARD
+	Children map[string]*DependencyRoot //mb should be ref
 	Target   string
 }
 
 var _ = (fs.NodeGetattrer)((*DependencyRoot)(nil))
-var _ = (fs.NodeOnAdder)((*DependencyRoot)(nil))
 
-func addChildren(ctx context.Context, r *fs.Inode, children map[string]*DependencyRoot) {
-	for name, dep := range children {
-		if dep.LinkType == "SOFT" {
-			if dep.Target == "" {
-				log.Fatalf("Target is empty for %s", name)
-			}
-			ch := r.NewPersistentInode(ctx, &fs.MemSymlink{
-				Data: []byte(dep.Target),
-			}, fs.StableAttr{Mode: syscall.S_IFLNK})
-			r.AddChild(name, ch, false)
-		} else {
-			if dep.Target == "" {
-				ch := r.NewPersistentInode(ctx, dep, fs.StableAttr{Mode: fuse.S_IFDIR})
-				r.AddChild(name, ch, false)
-			} else {
-				parts := strings.SplitN(dep.Target, ".zip/", 2)
+// var _ = (fs.NodeOnAdder)((*DependencyRoot)(nil))
+var _ = (fs.NodeLookuper)((*DependencyRoot)(nil))
+var _ = (fs.NodeReaddirer)((*DependencyRoot)(nil))
 
-				root, err := NewZipTree(parts[0]+".zip", parts[1])
-				if err != nil {
-					log.Fatal(err)
-				}
-				ch := r.NewPersistentInode(ctx, root,
-					fs.StableAttr{Mode: fuse.S_IFDIR})
-				r.AddChild(name, ch, false)
-				addChildren(ctx, ch, dep.Children)
-				for name := range dep.Children {
-					root.AddStaticChildren(name)
-				}
-			}
-		}
+// func addChildren(ctx context.Context, r *fs.Inode, children map[string]*DependencyRoot) {
+// 	for name, dep := range children {
+// 		if dep.LinkType == "SOFT" {
+// 			if dep.Target == "" {
+// 				log.Fatalf("Target is empty for %s", name)
+// 			}
+// 			ch := r.NewPersistentInode(ctx, &fs.MemSymlink{
+// 				Data: []byte(dep.Target),
+// 			}, fs.StableAttr{Mode: syscall.S_IFLNK})
+// 			r.AddChild(name, ch, false)
+// 		} else {
+// 			if dep.Target == "" {
+// 				ch := r.NewPersistentInode(ctx, dep, fs.StableAttr{Mode: fuse.S_IFDIR})
+// 				r.AddChild(name, ch, false)
+// 			} else {
+// 				parts := strings.SplitN(dep.Target, ".zip/", 2)
+
+// 				root, err := NewZipTree(parts[0]+".zip", parts[1])
+// 				if err != nil {
+// 					log.Fatal(err)
+// 				}
+// 				ch := r.NewPersistentInode(ctx, root,
+// 					fs.StableAttr{Mode: fuse.S_IFDIR})
+// 				r.AddChild(name, ch, false)
+// 				addChildren(ctx, ch, dep.Children)
+// 				for name := range dep.Children {
+// 					root.AddStaticChildren(name)
+// 				}
+// 			}
+// 		}
+// 	}
+// }
+
+func (r *DependencyRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	lst := make([]fuse.DirEntry, 0, len(r.Children))
+	for name, e := range r.Children {
+
+		lst = append(lst, fuse.DirEntry{
+			Mode: getMode(e),
+			Name: name,
+			Ino:  e.StableAttr().Ino, //0 if not inited, probably
+		})
+	}
+	return fs.NewListDirStream(lst), 0
+}
+
+func getMode(dep *DependencyRoot) uint32 {
+	if dep.LinkType == "SOFT" {
+		return syscall.S_IFLNK
+	} else {
+		return fuse.S_IFDIR
 	}
 }
 
-func (r *DependencyRoot) OnAdd(ctx context.Context) {
-	addChildren(ctx, &r.Inode, r.Children)
+func (r *DependencyRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	dep, ok := r.Children[name]
+	if !ok {
+		return nil, syscall.ENOENT
+	}
+	mode := getMode(dep)
+	if dep.LinkType == "SOFT" {
+		if dep.Target == "" {
+			log.Fatalf("Target is empty for %s", name)
+		}
+		ch := r.NewInode(ctx, &fs.MemSymlink{
+			Data: []byte(dep.Target),
+		}, fs.StableAttr{Mode: mode})
+		return ch, 0
+	} else {
+		if dep.Target == "" {
+			ch := r.NewInode(ctx, dep, fs.StableAttr{Mode: mode}) //could be inited multiple times (if ops.embed().bridge != nil {return ops.embed() })
+			return ch, 0
+		} else {
+			parts := strings.SplitN(dep.Target, ".zip/", 2)
+
+			root, err := NewZipTree(parts[0]+".zip", parts[1])
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			ch := r.NewInode(ctx, root,
+				fs.StableAttr{Mode: mode})
+			// r.AddChild(name, ch, false)
+			// addChildren(ctx, ch, dep.Children) //todo
+			// for name := range dep.Children {
+			// 	root.AddStaticChildren(name)
+			// }
+			return ch, 0
+		}
+	}
+
 }
+
+// func (r *DependencyRoot) OnAdd(ctx context.Context) {
+// 	addChildren(ctx, &r.Inode, r.Children)
+// }
 
 func (r *DependencyRoot) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	// out.Mode = 0755
@@ -141,7 +204,7 @@ func main() {
 	for mount, root := range fuseData.Roots {
 		toMount = append(toMount, ToMount{mount, root})
 	}
-	toMount = append(toMount, ToMount{"/tmp/dep", &ControlWrap{}})
+	// toMount = append(toMount, ToMount{"/tmp/dep", &ControlWrap{}})
 	close := make(chan os.Signal, 10)
 
 	for _, mount := range toMount {
@@ -158,6 +221,7 @@ func main() {
 
 		opts.MaxBackground = 30
 		opts.Debug = *debug
+		opts.Options = []string{"vm.vfs_cache_pressure=10"}
 
 		if err != nil {
 			log.Fatalf("Unmarshal fail: %v\n", err)
