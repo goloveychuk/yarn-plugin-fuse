@@ -82,12 +82,12 @@ var _ = (fs.NodeReaddirer)((*DependencyRoot)(nil))
 
 func (r *DependencyRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	lst := make([]fuse.DirEntry, 0, len(r.Children))
-	for name, e := range r.Children {
+	for name, ch := range r.Children {
 
 		lst = append(lst, fuse.DirEntry{
-			Mode: getMode(e),
+			Mode: getMode(ch),
 			Name: name,
-			Ino:  e.StableAttr().Ino, //0 if not inited, probably
+			Ino:  ch.getInoStart(),
 		})
 	}
 	return fs.NewListDirStream(lst), 0
@@ -123,7 +123,7 @@ func (r *DependencyRoot) Lookup(ctx context.Context, name string, out *fuse.Entr
 		}
 		ch := r.NewInode(ctx, &fs.MemSymlink{
 			Data: []byte(dep.Target),
-		}, fs.StableAttr{Mode: mode})
+		}, fs.StableAttr{Mode: mode, Ino: ino})
 		return ch, 0
 	} else {
 		if dep.Target == "" {
@@ -132,7 +132,7 @@ func (r *DependencyRoot) Lookup(ctx context.Context, name string, out *fuse.Entr
 		} else {
 			parts := strings.SplitN(dep.Target, ".zip/", 2)
 
-			root, err := NewZipTree(zg, parts[0]+".zip", parts[1], ino+1) //carefull
+			root, err := NewZipTree(zg, parts[0]+".zip", parts[1], ino+1) //careful
 			if err != nil {
 				log.Fatal(err)
 			}
