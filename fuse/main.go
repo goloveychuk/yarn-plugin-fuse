@@ -27,7 +27,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fuse"
 )
 
-var zg *zipGetter
+var ZIP_GETTER *zipGetter
 
 const INO_STEP = uint64(1_000_000_000)
 
@@ -109,35 +109,38 @@ func (r *DependencyRoot) getInoStart() uint64 {
 
 	return r.inoStart
 }
-
 func (r *DependencyRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	return r.GetChild(&r.Inode, ctx, name, out)
+}
+
+func (r *DependencyRoot) GetChild(parent *fs.Inode, ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	dep, ok := r.Children[name]
 	if !ok {
 		return nil, syscall.ENOENT
 	}
 	mode := getMode(dep)
-	ino := dep.getInoStart()
+	ino := dep.getInoStart() //careful
 	if dep.LinkType == "SOFT" {
 		if dep.Target == "" {
 			log.Fatalf("Target is empty for %s", name)
 		}
-		ch := r.NewInode(ctx, &fs.MemSymlink{
+		ch := parent.NewInode(ctx, &fs.MemSymlink{
 			Data: []byte(dep.Target),
 		}, fs.StableAttr{Mode: mode, Ino: ino})
 		return ch, 0
 	} else {
 		if dep.Target == "" {
-			ch := r.NewInode(ctx, dep, fs.StableAttr{Mode: mode, Ino: ino}) //could be inited multiple times (if ops.embed().bridge != nil {return ops.embed() })
+			ch := parent.NewInode(ctx, dep, fs.StableAttr{Mode: mode, Ino: ino}) //could be inited multiple times (if ops.embed().bridge != nil {return ops.embed() })
 			return ch, 0
 		} else {
 			parts := strings.SplitN(dep.Target, ".zip/", 2)
 
-			root, err := NewZipTree(zg, parts[0]+".zip", parts[1], ino+1) //careful
+			root, err := NewZipTree(dep, parts[0]+".zip", parts[1], ino+1)
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			ch := r.NewInode(ctx, root,
+			ch := parent.NewInode(ctx, root,
 				fs.StableAttr{Mode: mode, Ino: ino})
 			// r.AddChild(name, ch, false)
 			// addChildren(ctx, ch, dep.Children) //todo
@@ -227,7 +230,7 @@ func main() {
 	// toMount = append(toMount, ToMount{"/tmp/dep", &ControlWrap{}})
 	close := make(chan os.Signal, 10)
 
-	zg = createZipGetter()
+	ZIP_GETTER = createZipGetter()
 	for _, mount := range toMount {
 		println("Mounting", mount.path)
 		if isExists(mount.path) {

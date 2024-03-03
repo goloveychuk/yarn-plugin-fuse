@@ -13,22 +13,13 @@ type zipDir struct {
 	fs.Inode
 	root *ZipRoot
 	path string
-	// children map[string]fs.InodeEmbedder
 }
 
 var _ = (fs.NodeGetattrer)((*zipDir)(nil))
-
 var _ = (fs.NodeLookuper)((*zipDir)(nil))
-
-// var _ = (fs.NodeReaddirer)((*zipDir)(nil))
-
-// var _ = (fs.NodeSetattrer)((*zipDir)(nil))
-// var _ = (fs.NodeRenamer)((*zipDir)(nil))
+var _ = (fs.NodeReaddirer)((*zipDir)(nil))
 
 func (zr *zipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	// if !zr.staticChildren[name] {
-	// 	zr.openZip(ctx)
-	// }
 
 	zip, err := zr.root.GetZip()
 	if err != nil {
