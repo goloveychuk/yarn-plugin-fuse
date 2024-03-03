@@ -6,6 +6,7 @@ import (
 	pathMod "path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -24,10 +25,13 @@ type fListedData struct {
 
 type zipFileData struct {
 	attr fuse.Attr
+	mu   *sync.Mutex //todo impl
+	file *zip.File
 }
 type proccessedZip struct {
 	chMap     map[string]map[string]*fListedData
 	filesData map[string]*zipFileData
+	zip       *zip.ReadCloser
 }
 
 func getZFAttrs(f *zip.File) fuse.Attr {
@@ -77,7 +81,9 @@ func processZip(zr *zip.ReadCloser, stripPrefix string, inoStart uint64) *procce
 					typ = FILE
 					filesData[fullPath] = &zipFileData{
 						attr: getZFAttrs(f),
+						file: f,
 					}
+
 				} else {
 					typ = DIR
 				}
@@ -92,7 +98,7 @@ func processZip(zr *zip.ReadCloser, stripPrefix string, inoStart uint64) *procce
 		}
 
 	}
-	return &proccessedZip{chMap: chMap, filesData: filesData}
+	return &proccessedZip{chMap: chMap, filesData: filesData, zip: zr}
 
 }
 
@@ -112,12 +118,15 @@ func (zg *zipGetter) GetZip(path string, stripPrefix string, inoStart uint64) (*
 	}
 	zr = processZip(f, stripPrefix, inoStart)
 	zg.cache.Add(path, zr)
-	f.Close() //don't affect memory
+	// f.Close() //don't affect memory
 	return zr, nil
 }
 
 func createZipGetter() *zipGetter {
-	lru := expirable.NewLRU[string, *proccessedZip](10, nil, time.Second*30)
+	lru := expirable.NewLRU[string, *proccessedZip](100, func(k string, v *proccessedZip) {
+		v.zip.Close()
+	}, time.Second*20)
+
 	zg := &zipGetter{cache: lru}
 
 	return zg
