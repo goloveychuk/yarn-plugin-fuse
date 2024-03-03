@@ -123,7 +123,7 @@ func (zg *zipGetter) GetZip(path string, stripPrefix string, inoStart uint64) (*
 }
 
 func createZipGetter() *zipGetter {
-	lru := expirable.NewLRU[string, *proccessedZip](100, func(k string, v *proccessedZip) {
+	lru := expirable.NewLRU[string, *proccessedZip](30, func(k string, v *proccessedZip) {
 		v.zip.Close()
 	}, time.Second*20)
 

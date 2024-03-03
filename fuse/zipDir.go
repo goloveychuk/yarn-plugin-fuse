@@ -30,7 +30,7 @@ func (zr *zipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 	// 	zr.openZip(ctx)
 	// }
 
-	zip, err := zr.root.zipGetter.GetZip(zr.root.zipPath, zr.root.stripPrefix, zr.root.inoStart)
+	zip, err := zr.root.GetZip()
 	if err != nil {
 		return nil, syscall.ENOENT
 	}
@@ -54,7 +54,7 @@ func (zr *zipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 }
 
 func (r *zipDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	zip, err := r.root.zipGetter.GetZip(r.root.zipPath, r.root.stripPrefix, r.root.inoStart)
+	zip, err := r.root.GetZip()
 	if err != nil {
 		return nil, syscall.ENOENT
 	}
