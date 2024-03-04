@@ -2,11 +2,12 @@ package main
 
 import (
 	"archive/zip"
+	"io"
 	"os"
 	pathMod "path"
 	"path/filepath"
 	"strings"
-	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -24,10 +25,39 @@ type fListedData struct {
 }
 
 type zipFileData struct {
-	attr fuse.Attr
-	mu   *sync.Mutex //todo impl
-	file *zip.File
+	attr               fuse.Attr
+	dataOffset         int64
+	compressedSize64   uint64
+	uncompressedSize64 uint64
+	method             uint16
+	zipPath            *string
 }
+
+// type filesFdsCache expirable.LRU[string, *os.File] //also use for zip (NewReader)
+
+func (this *zipFileData) ReadFile() ([]byte, syscall.Errno) {
+	file, e := os.Open(*this.zipPath) //todo lru cache
+	if e != nil {
+		return nil, syscall.EIO
+	}
+	decomp := decompressor(this.method)
+
+	reader := io.NewSectionReader(file, this.dataOffset, int64(this.compressedSize64))
+	res := decomp(reader)
+	defer res.Close()
+
+	text := make([]byte, this.uncompressedSize64)
+
+	read, e2 := io.ReadFull(res, text)
+	if e2 != nil {
+		return nil, syscall.EIO
+	}
+	if read != int(this.uncompressedSize64) {
+		return nil, syscall.EIO
+	}
+	return text, 0
+}
+
 type proccessedZip struct {
 	chMap     map[string]map[string]*fListedData
 	filesData map[string]*zipFileData
@@ -48,7 +78,7 @@ func getZFAttrs(f *zip.File) fuse.Attr {
 	}
 }
 
-func processZip(zr *zip.ReadCloser, stripPrefix string, inoStart uint64) *proccessedZip {
+func processZip(zr *zip.ReadCloser, zipPath *string, stripPrefix string, inoStart uint64) *proccessedZip {
 	chMap := make(map[string]map[string]*fListedData)
 	filesData := make(map[string]*zipFileData)
 	curIno := inoStart
@@ -79,9 +109,15 @@ func processZip(zr *zip.ReadCloser, stripPrefix string, inoStart uint64) *procce
 				var typ uint8
 				if isFile {
 					typ = FILE
+					dataOffset, _ := f.DataOffset()
+					// if err //todo
 					filesData[fullPath] = &zipFileData{
-						attr: getZFAttrs(f),
-						file: f,
+						attr:               getZFAttrs(f),
+						dataOffset:         dataOffset,
+						compressedSize64:   f.CompressedSize64,
+						uncompressedSize64: f.UncompressedSize64,
+						method:             f.Method,
+						zipPath:            zipPath,
 					}
 
 				} else {
@@ -116,9 +152,9 @@ func (zg *zipGetter) GetZip(path string, stripPrefix string, inoStart uint64) (*
 	if err != nil {
 		return nil, err
 	}
-	zr = processZip(f, stripPrefix, inoStart)
+	defer f.Close() //don't affect memory
+	zr = processZip(f, &path, stripPrefix, inoStart)
 	zg.cache.Add(path, zr)
-	// f.Close() //don't affect memory
 	return zr, nil
 }
 

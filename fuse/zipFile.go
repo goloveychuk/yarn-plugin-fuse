@@ -12,17 +12,17 @@ import (
 
 type zipFile struct {
 	fs.Inode
-	// file *zip.File
-	attr fuse.Attr
-	mu   sync.Mutex
-	data []byte
+
+	fileData *zipFileData
+	mu       sync.Mutex
+	data     []byte
 }
 
 var _ = (fs.NodeOpener)((*zipFile)(nil))
 var _ = (fs.NodeGetattrer)((*zipFile)(nil))
 
 func (zf *zipFile) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	out.Attr = zf.attr
+	out.Attr = zf.fileData.attr
 	return 0
 }
 
@@ -40,17 +40,12 @@ func (zf *zipFile) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint3
 		return nil, 0, 0
 	}
 	if zf.data == nil {
-		// rc, err := zf.file.Open()
-		// if err != nil {
-		// 	return nil, 0, syscall.EIO
-		// }
-		// content, err := ioutil.ReadAll(rc)
-		// if err != nil {
-		// 	return nil, 0, syscall.EIO
-		// }
-
-		// zf.data = content
-	} //todo clean
+		data, err := zf.fileData.ReadFile()
+		if err != 0 {
+			return nil, 0, err
+		}
+		zf.data = data
+	}
 
 	// We don't return a filehandle since we don't really need
 	// one.  The file content is immutable, so hint the kernel to

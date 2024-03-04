@@ -36,7 +36,7 @@ func (zr *zipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 			ch := zr.NewInode(ctx, newZipDir(zr.root, fullPath), fs.StableAttr{Mode: fuse.S_IFDIR, Ino: d.ino}) //ino
 			return ch, 0
 		}
-		ch := zr.NewInode(ctx, &zipFile{attr: zip.filesData[fullPath].attr}, fs.StableAttr{Mode: fuse.S_IFREG, Ino: d.ino}) //ino
+		ch := zr.NewInode(ctx, &zipFile{fileData: zip.filesData[fullPath]}, fs.StableAttr{Mode: fuse.S_IFREG, Ino: d.ino}) //ino
 		return ch, 0
 	}
 
