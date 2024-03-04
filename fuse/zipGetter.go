@@ -3,6 +3,8 @@ package main
 import (
 	"archive/zip"
 	"io"
+	"io/fs"
+	"log"
 	"os"
 	pathMod "path"
 	"path/filepath"
@@ -14,14 +16,9 @@ import (
 	"github.com/hashicorp/golang-lru/v2/expirable"
 )
 
-const (
-	DIR  = uint8(1)
-	FILE = uint8(2)
-)
-
 type fListedData struct {
-	ino uint64
-	typ uint8
+	ino      uint64
+	fileData *zipFileData
 }
 
 type zipFileData struct {
@@ -59,9 +56,8 @@ func (this *zipFileData) ReadFile() ([]byte, syscall.Errno) {
 }
 
 type proccessedZip struct {
-	chMap     map[string]map[string]*fListedData
-	filesData map[string]*zipFileData
-	zip       *zip.ReadCloser
+	chMap map[string]map[string]*fListedData
+	zip   *zip.ReadCloser
 }
 
 func getZFAttrs(f *zip.File) fuse.Attr {
@@ -80,7 +76,6 @@ func getZFAttrs(f *zip.File) fuse.Attr {
 
 func processZip(zr *zip.ReadCloser, zipPath *string, stripPrefix string, inoStart uint64) *proccessedZip {
 	chMap := make(map[string]map[string]*fListedData)
-	filesData := make(map[string]*zipFileData)
 	curIno := inoStart
 
 	for _, f := range zr.File {
@@ -95,7 +90,7 @@ func processZip(zr *zip.ReadCloser, zipPath *string, stripPrefix string, inoStar
 			continue
 		}
 
-		isFile := !f.FileInfo().IsDir()
+		mode := f.FileInfo().Mode()
 
 		parts := strings.Split(path, string(os.PathSeparator))
 
@@ -106,12 +101,14 @@ func processZip(zr *zip.ReadCloser, zipPath *string, stripPrefix string, inoStar
 			}
 			fullPath := pathMod.Join(prev, part)
 			if ind == len(parts)-1 {
-				var typ uint8
-				if isFile {
-					typ = FILE
+				var fileData *zipFileData = nil
+
+				if mode.IsDir() {
+
+				} else if mode.IsRegular() {
 					dataOffset, _ := f.DataOffset()
 					// if err //todo
-					filesData[fullPath] = &zipFileData{
+					fileData = &zipFileData{
 						attr:               getZFAttrs(f),
 						dataOffset:         dataOffset,
 						compressedSize64:   f.CompressedSize64,
@@ -119,13 +116,14 @@ func processZip(zr *zip.ReadCloser, zipPath *string, stripPrefix string, inoStar
 						method:             f.Method,
 						zipPath:            zipPath,
 					}
-
+				} else if mode&fs.ModeSymlink != 0 {
+					log.Fatalf("Not impl for for symlinks %s, %s, %s", mode, f.Name, *zipPath)
 				} else {
-					typ = DIR
+					log.Fatalf("Unknown file mode %s, %s, %s", mode, f.Name, *zipPath)
 				}
 				d := &fListedData{
-					ino: curIno,
-					typ: typ,
+					ino:      curIno,
+					fileData: fileData,
 				}
 				curIno += 1
 				chMap[prev][part] = d
@@ -134,7 +132,7 @@ func processZip(zr *zip.ReadCloser, zipPath *string, stripPrefix string, inoStar
 		}
 
 	}
-	return &proccessedZip{chMap: chMap, filesData: filesData, zip: zr}
+	return &proccessedZip{chMap: chMap, zip: zr}
 
 }
 

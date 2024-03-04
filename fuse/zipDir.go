@@ -32,11 +32,11 @@ func (zr *zipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 			return nil, syscall.ENOENT
 		}
 		fullPath := path.Join(zr.path, name)
-		if d.typ == DIR {
-			ch := zr.NewInode(ctx, newZipDir(zr.root, fullPath), fs.StableAttr{Mode: fuse.S_IFDIR, Ino: d.ino}) //ino
+		if d.fileData == nil {
+			ch := zr.NewInode(ctx, newZipDir(zr.root, fullPath), fs.StableAttr{Mode: fuse.S_IFDIR, Ino: d.ino})
 			return ch, 0
 		}
-		ch := zr.NewInode(ctx, &zipFile{fileData: zip.filesData[fullPath]}, fs.StableAttr{Mode: fuse.S_IFREG, Ino: d.ino}) //ino
+		ch := zr.NewInode(ctx, &zipFile{fileData: d.fileData}, fs.StableAttr{Mode: fuse.S_IFREG, Ino: d.ino})
 		return ch, 0
 	}
 
@@ -54,9 +54,9 @@ func (r *zipDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		ind := 0
 		for name, d := range ch {
 			var mode uint32
-			if d.typ == DIR {
+			if d.fileData == nil {
 				mode = fuse.S_IFDIR
-			} else if d.typ == FILE {
+			} else {
 				mode = fuse.S_IFREG
 			}
 			lst[ind] = fuse.DirEntry{
