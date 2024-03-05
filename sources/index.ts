@@ -723,7 +723,7 @@ class FuseInstaller implements Installer {
     );
     // console.log(locatorMap);
 
-    console.log(inspect(locationTree, { depth: 10 }));
+    // console.log(inspect(locationTree, { depth: 10 }));
     const fuseState = buildFuseTree(locationTree, binSymlinks);
     // console.log(tree)
     await xfs.changeFilePromise(
@@ -733,7 +733,7 @@ class FuseInstaller implements Installer {
     );
 
     console.log(installStatuses);
-    console.log(binSymlinks);
+    // console.log(binSymlinks);
     return {
       customData: this.customData,
       records: installStatuses,
@@ -745,11 +745,11 @@ class FuseLinker implements Linker {
     return this.isEnabled(opts);
   }
   async findPackageLocation(locator: Locator, opts: LinkOptions) {
-    console.error(locator);
+    // console.error(locator);
   }
 
   async findPackageLocator(location: PortablePath, opts: LinkOptions) {
-    console.error(locator);
+    // console.error(locator);
   }
   getCustomDataKey(): string {
     return JSON.stringify({

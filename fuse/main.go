@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -32,6 +33,13 @@ var ZIP_GETTER *zipGetter
 const INO_STEP = uint64(1_000_000_000)
 
 var last_ino = uint64(0)
+
+var inoCache *inoCacheStr
+
+type inoCacheStr struct {
+	m  map[string]uint64
+	mu sync.Mutex
+}
 
 type DependencyRoot struct {
 	fs.Inode
@@ -102,7 +110,21 @@ func getMode(dep *DependencyRoot) uint32 {
 }
 
 func (r *DependencyRoot) getInoStart() uint64 {
-	if r.inoStart == 0 {
+	if r.inoStart != 0 {
+		return r.inoStart
+	}
+
+	if r.LinkType == "HARD" && r.Target != "" {
+		inoCache.mu.Lock()
+		defer inoCache.mu.Unlock()
+		if ino, ok := inoCache.m[r.Target]; ok {
+			r.inoStart = ino
+		} else {
+			newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
+			inoCache.m[r.Target] = newInoStart
+			r.inoStart = newInoStart
+		}
+	} else {
 		newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
 		r.inoStart = newInoStart
 	}
@@ -229,7 +251,7 @@ func main() {
 	}
 	// toMount = append(toMount, ToMount{"/tmp/dep", &ControlWrap{}})
 	close := make(chan os.Signal, 10)
-
+	inoCache = &inoCacheStr{m: make(map[string]uint64)}
 	ZIP_GETTER = createZipGetter()
 	for _, mount := range toMount {
 		println("Mounting", mount.path)
