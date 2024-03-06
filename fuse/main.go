@@ -26,6 +26,7 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/pkg/profile"
 )
 
 var ZIP_GETTER *zipGetter
@@ -228,7 +229,8 @@ func main() {
 		log.Fatal("Usage:\n  hello MOUNTPOINT")
 	}
 	if *prof {
-		// defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")).Stop()
+		defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")).Stop()
+		defer profile.Start(profile.MemProfile).Stop()
 		go func() {
 			http.ListenAndServe(":8080", nil)
 		}()

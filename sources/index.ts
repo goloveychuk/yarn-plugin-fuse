@@ -740,30 +740,41 @@ class FuseInstaller implements Installer {
     const installFuseTree: FuseData = {roots: {}};
 
     for (const status of installStatuses) {
+      break
+      const started = Date.now();
       if (status.buildRequest.skipped) continue;
       const unpluggedPath = getUnpluggedPath(status.locator, {configuration: this.opts.project.configuration})
+      status.buildLocations = [unpluggedPath]
+      const rootSlot = this.localStore.get(status.locator.locatorHash);
+      console.log(unpluggedPath)
       const rootInfo: PackageInformation<NativePath> = {
-        ...this.localStore.get(status.locator.locatorHash).pnpNode,
+        ...rootSlot.pnpNode,
         packageLocation: `${npath.fromPortablePath(unpluggedPath)}/`,
         // linkType: LinkType.SOFT,
       };
-      const rootLocator: TopLevelPackageLocator = {
-        
-      }
+      
       const otherPnpApi: PnpApi = {
         ...pnpApi,
         getDependencyTreeRoots: () => [],
         findPackageLocator: (location) => {
           if (location === rootInfo.packageLocation) {
-            return status.locator;
+            return {
+              name: 'root',
+              reference: 'root',
+            }
           }
           throw new Error('not impl');
+        },
+        resolveVirtual: (path) => {
+          return npath.fromPortablePath(
+            VirtualFS.resolveVirtual(npath.toPortablePath(path)),
+          );
         },
         getPackageInformation: (pnpLocator) => {
           if (pnpLocator.reference === null) {
             return rootInfo;
           }
-          if (pnpLocator.name == status.locator.name && pnpLocator.reference == status.locator.reference) {
+          if (pnpLocator.reference == 'root' && pnpLocator.name == 'root') {
             return rootInfo;
           }
           const locator = structUtils.makeLocator(
@@ -801,24 +812,27 @@ class FuseInstaller implements Installer {
       const locationTree = buildLocationTree(locatorMap, {
         skipPrefix: unpluggedPath,
       });
-      const binSymlinks = await createBinSymlinkMap(
-        locatorMap,
-        locationTree,
-        unpluggedPath,
-        {
-          loadManifest: async (locatorKey) => {
-            const locator = structUtils.parseLocator(locatorKey);
+      // const binSymlinks = await createBinSymlinkMap(
+      //   locatorMap,
+      //   locationTree,
+      //   unpluggedPath,
+      //   {
+      //     loadManifest: async (locatorKey) => {
+      //       const locator = structUtils.parseLocator(locatorKey);
+      //       if (locator.reference === 'root' && locator.name === 'root') {
+      //         return rootSlot.customPackageData.manifest
+      //       }
+      //       const slot = this.localStore.get(locator.locatorHash);
+      //       if (typeof slot === `undefined`)
+      //         throw new Error(`Assertion failed: Expected the slot to exist`);
   
-            const slot = this.localStore.get(locator.locatorHash);
-            if (typeof slot === `undefined`)
-              throw new Error(`Assertion failed: Expected the slot to exist`);
-  
-            return slot.customPackageData.manifest;
-          },
-        },
-      );
-      const fuseTree = buildFuseTree(locationTree, binSymlinks);
+      //       return slot.customPackageData.manifest;
+      //     },
+      //   },
+      // );
+      const fuseTree = buildFuseTree(locationTree, new Map());
       Object.assign(installFuseTree.roots, fuseTree.roots);
+      console.log(Date.now() - started);
     }
 
     return {

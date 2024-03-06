@@ -10,7 +10,7 @@ import (
 )
 
 type zipDir struct {
-	fs.Inode
+	mutableNode
 	root *ZipRoot
 	path string
 }
@@ -82,28 +82,5 @@ func newZipDir(root *ZipRoot, path string) *zipDir {
 	return &zipDir{
 		root: root,
 		path: path,
-		// children: make(map[string]fs.InodeEmbedder)
 	}
 }
-
-// func (f *zipDir) Setattr(ctx context.Context, file fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
-// 	return 0
-// }
-
-// func (f *zipDir) Rename(ctx context.Context, name string, newParent fs.InodeEmbedder, newName string, flags uint32) syscall.Errno {
-// 	// zr.openZip(ctx) rename somewhy opens zip
-// 	return 0
-// }
-
-// func (f *zipDir) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (node *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
-// 	// zr.openZip(ctx) todo opens?
-// 	fmt.Println("create")
-// 	file := f.NewPersistentInode(ctx, &fs.MemRegularFile{}, fs.StableAttr{}) //todo owner
-// 	return file, nil, 0, 0                                                   //check flags
-// }
-
-// func (f *zipDir) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-// 	// zr.openZip(ctx) todo also opens
-// 	fmt.Println("mkdir")
-// 	return f.NewPersistentInode(ctx, &zipDir{}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
-// }

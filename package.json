@@ -9,7 +9,7 @@
     "typescript": "^5.0.0"
   },
   "scripts": {
-    "build": "builder build plugin"
+    "build": "builder build plugin --no-minify --source-map"
   },
   "packageManager": "yarn@4.1.0"
 }
