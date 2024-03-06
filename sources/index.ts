@@ -337,6 +337,10 @@ function buildFuseTree(
   return result;
 }
 
+function getUnpluggedPath(locator: Locator, {configuration}: {configuration: Configuration}) {
+  return ppath.resolve(configuration.get(`pnpUnpluggedFolder`), structUtils.slugifyLocator(locator));
+}
+
 async function extractCustomPackageData(
   pkg: Package,
   fetchResult: FetchResult,
@@ -700,6 +704,7 @@ class FuseInstaller implements Installer {
     const locationTree = buildLocationTree(locatorMap, {
       skipPrefix: this.opts.project.cwd,
     });
+
     const binSymlinks = await createBinSymlinkMap(
       locatorMap,
       locationTree,
@@ -732,8 +737,90 @@ class FuseInstaller implements Installer {
       {},
     );
 
-    console.log(installStatuses);
-    // console.log(binSymlinks);
+    const installFuseTree: FuseData = {roots: {}};
+
+    for (const status of installStatuses) {
+      if (status.buildRequest.skipped) continue;
+      const unpluggedPath = getUnpluggedPath(status.locator, {configuration: this.opts.project.configuration})
+      const rootInfo: PackageInformation<NativePath> = {
+        ...this.localStore.get(status.locator.locatorHash).pnpNode,
+        packageLocation: `${npath.fromPortablePath(unpluggedPath)}/`,
+        // linkType: LinkType.SOFT,
+      };
+      const rootLocator: TopLevelPackageLocator = {
+        
+      }
+      const otherPnpApi: PnpApi = {
+        ...pnpApi,
+        getDependencyTreeRoots: () => [],
+        findPackageLocator: (location) => {
+          if (location === rootInfo.packageLocation) {
+            return status.locator;
+          }
+          throw new Error('not impl');
+        },
+        getPackageInformation: (pnpLocator) => {
+          if (pnpLocator.reference === null) {
+            return rootInfo;
+          }
+          if (pnpLocator.name == status.locator.name && pnpLocator.reference == status.locator.reference) {
+            return rootInfo;
+          }
+          const locator = structUtils.makeLocator(
+            structUtils.parseIdent(pnpLocator.name),
+            pnpLocator.reference,
+          );
+        
+          const slot = this.localStore.get(locator.locatorHash);
+          if (typeof slot === `undefined`)
+            throw new Error(
+              `Assertion failed: Expected the package reference to have been registered`,
+            );
+
+          return slot.pnpNode;
+        },
+      };
+
+      const { tree, errors, preserveSymlinksRequired } = buildNodeModulesTree(
+        otherPnpApi,
+        {
+          pnpifyFs: false,
+          validateExternalSoftLinks: true,
+          hoistingLimitsByCwd,
+          project: this.opts.project,
+          selfReferencesByCwd,
+        },
+      );
+      if (!tree) {
+        for (const { messageName, text } of errors)
+          this.opts.report.reportError(messageName, text);
+  
+        return undefined;
+      }
+      const locatorMap = buildLocatorMap(tree);
+      const locationTree = buildLocationTree(locatorMap, {
+        skipPrefix: unpluggedPath,
+      });
+      const binSymlinks = await createBinSymlinkMap(
+        locatorMap,
+        locationTree,
+        unpluggedPath,
+        {
+          loadManifest: async (locatorKey) => {
+            const locator = structUtils.parseLocator(locatorKey);
+  
+            const slot = this.localStore.get(locator.locatorHash);
+            if (typeof slot === `undefined`)
+              throw new Error(`Assertion failed: Expected the slot to exist`);
+  
+            return slot.customPackageData.manifest;
+          },
+        },
+      );
+      const fuseTree = buildFuseTree(locationTree, binSymlinks);
+      Object.assign(installFuseTree.roots, fuseTree.roots);
+    }
+
     return {
       customData: this.customData,
       records: installStatuses,
@@ -770,9 +857,7 @@ const plugin: Plugin<Hooks> = {
   linkers: [FuseLinker],
   commands: [],
   hooks: {
-    afterAllInstalled(project, options) {
-      
-    },
+    afterAllInstalled(project, options) {},
   },
 };
 
