@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"path"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -33,10 +34,18 @@ func (zr *zipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 		}
 		fullPath := path.Join(zr.path, name)
 		if d.fileData == nil {
-			ch := zr.NewInode(ctx, newZipDir(zr.root, fullPath), fs.StableAttr{Mode: fuse.S_IFDIR, Ino: d.ino})
+			ch := zr.NewInode(ctx, newZipDir(zr.root, fullPath), fs.StableAttr{
+				Mode: fuse.S_IFDIR,
+				Gen:  atomic.AddUint64(&lastGen, 1),
+				Ino:  d.ino,
+			})
 			return ch, 0
 		}
-		ch := zr.NewInode(ctx, &zipFile{fileData: d.fileData}, fs.StableAttr{Mode: fuse.S_IFREG, Ino: d.ino})
+		ch := zr.NewInode(ctx, &zipFile{fileData: d.fileData}, fs.StableAttr{
+			Mode: fuse.S_IFREG,
+			Gen:  atomic.AddUint64(&lastGen, 1),
+			Ino:  d.ino,
+		})
 		return ch, 0
 	}
 

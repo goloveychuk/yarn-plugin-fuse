@@ -12,15 +12,14 @@ type MultiDirStream struct {
 }
 
 func (this *MultiDirStream) HasNext() bool {
-	for ind, stream := range this.streams {
+	newStreams := make([]fs.DirStream, 0, len(this.streams))
+	for _, stream := range this.streams {
 		if stream.HasNext() {
-			return true
-		} else {
-			this.streams = append(this.streams[:ind], this.streams[ind+1:]...)
-			stream.Close()
+			newStreams = append(newStreams, stream)
 		}
 	}
-	return false
+	this.streams = newStreams
+	return len(newStreams) > 0
 }
 
 func (this *MultiDirStream) Next() (fuse.DirEntry, syscall.Errno) {

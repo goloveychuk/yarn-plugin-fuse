@@ -14,7 +14,7 @@ import (
 )
 
 type LookableListable interface {
-	GetChild(parent *fs.Inode, ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno)
+	GetChild(parent *fs.Inode, ctx context.Context, name string, out *fuse.EntryOut) *fs.Inode
 	Readdir(ctx context.Context) (fs.DirStream, syscall.Errno)
 }
 type ZipRoot struct {
@@ -66,11 +66,11 @@ func (r *ZipRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 
 	return NewMultiDirStream(staticChildren, zipList), 0
 }
-func (zr *ZipRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	if node, err := zr.root.staticLookable.GetChild(&zr.Inode, ctx, name, out); err != syscall.ENOENT {
-		return node, err
+func (this *ZipRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	if node := this.staticLookable.GetChild(&this.Inode, ctx, name, out); node != nil {
+		return node, 0
 	}
-	return zr.zipDir.Lookup(ctx, name, out)
+	return this.zipDir.Lookup(ctx, name, out)
 }
 
 // func (zr *ZipRoot) AddStaticChildren(name string) { //mb rewrite
