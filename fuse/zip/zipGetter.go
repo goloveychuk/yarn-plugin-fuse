@@ -9,6 +9,7 @@ import (
 	pathMod "path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -56,8 +57,12 @@ func (this *zipFileData) ReadFile() ([]byte, syscall.Errno) {
 }
 
 type proccessedZip struct {
-	chMap map[string]map[string]*fListedData
-	zip   *zip.ReadCloser
+	chMap       map[string]map[string]*fListedData
+	mu          sync.Mutex
+	processed   bool
+	zipPath     *string
+	stripPrefix string
+	inoStart    uint64
 }
 
 func getZFAttrs(f *zip.File) fuse.Attr {
@@ -74,9 +79,21 @@ func getZFAttrs(f *zip.File) fuse.Attr {
 	}
 }
 
-func processZip(zr *zip.ReadCloser, zipPath *string, stripPrefix string, inoStart uint64) *proccessedZip {
-	chMap := make(map[string]map[string]*fListedData)
-	curIno := inoStart
+func (this *proccessedZip) processZip() (*proccessedZip, error) {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	if this.processed {
+		return this, nil
+	}
+	zipPath := this.zipPath
+	curIno := this.inoStart
+	stripPrefix := this.stripPrefix
+
+	zr, err := zip.OpenReader(*zipPath)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
 
 	for _, f := range zr.File {
 
@@ -96,8 +113,8 @@ func processZip(zr *zip.ReadCloser, zipPath *string, stripPrefix string, inoStar
 
 		prev := ""
 		for ind, part := range parts {
-			if _, ok := chMap[prev]; !ok {
-				chMap[prev] = make(map[string]*fListedData)
+			if _, ok := this.chMap[prev]; !ok {
+				this.chMap[prev] = make(map[string]*fListedData)
 			}
 			fullPath := pathMod.Join(prev, part)
 			if ind == len(parts)-1 {
@@ -126,18 +143,22 @@ func processZip(zr *zip.ReadCloser, zipPath *string, stripPrefix string, inoStar
 					fileData: fileData,
 				}
 				curIno += 1
-				chMap[prev][part] = d
+				this.chMap[prev][part] = d
 			}
 			prev = fullPath
 		}
-
 	}
-	return &proccessedZip{chMap: chMap, zip: zr}
+	this.processed = true
+	return this, nil
+}
 
+func newProcessedZip(path *string, stripPrefix string, inoStart uint64) *proccessedZip {
+	return &proccessedZip{chMap: make(map[string]map[string]*fListedData), zipPath: path, stripPrefix: stripPrefix, inoStart: inoStart}
 }
 
 type zipGetter struct {
 	cache *expirable.LRU[string, *proccessedZip]
+	mu    sync.Mutex
 }
 
 type IZipGetter interface {
@@ -145,24 +166,20 @@ type IZipGetter interface {
 }
 
 func (zg *zipGetter) GetZip(path string, stripPrefix string, inoStart uint64) (*proccessedZip, error) {
-	zr, ok := zg.cache.Get(path)
-	if ok {
-		return zr, nil
+	zg.mu.Lock()
+	if zr, ok := zg.cache.Get(path); ok {
+		zg.mu.Unlock()
+		return zr.processZip()
 	}
-
-	f, err := zip.OpenReader(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close() //don't affect memory
-	zr = processZip(f, &path, stripPrefix, inoStart)
+	zr := newProcessedZip(&path, stripPrefix, inoStart)
 	zg.cache.Add(path, zr)
-	return zr, nil
+	zg.mu.Unlock()
+	return zr.processZip()
 }
 
 func CreateZipGetter() IZipGetter {
 	lru := expirable.NewLRU[string, *proccessedZip](30, func(k string, v *proccessedZip) {
-		v.zip.Close()
+
 	}, time.Second*20)
 
 	zg := &zipGetter{cache: lru}
