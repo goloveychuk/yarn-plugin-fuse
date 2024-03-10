@@ -1,4 +1,4 @@
-package main
+package zip
 
 import (
 	"archive/zip"
@@ -140,6 +140,10 @@ type zipGetter struct {
 	cache *expirable.LRU[string, *proccessedZip]
 }
 
+type IZipGetter interface {
+	GetZip(path string, stripPrefix string, inoStart uint64) (*proccessedZip, error)
+}
+
 func (zg *zipGetter) GetZip(path string, stripPrefix string, inoStart uint64) (*proccessedZip, error) {
 	zr, ok := zg.cache.Get(path)
 	if ok {
@@ -156,7 +160,7 @@ func (zg *zipGetter) GetZip(path string, stripPrefix string, inoStart uint64) (*
 	return zr, nil
 }
 
-func createZipGetter() *zipGetter {
+func CreateZipGetter() IZipGetter {
 	lru := expirable.NewLRU[string, *proccessedZip](30, func(k string, v *proccessedZip) {
 		v.zip.Close()
 	}, time.Second*20)

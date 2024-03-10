@@ -1,4 +1,4 @@
-package main
+package zip
 
 import (
 	"context"
@@ -10,17 +10,19 @@ import (
 	"github.com/hanwen/go-fuse/v2/fuse"
 )
 
-type zipDir struct {
+var last_gen = uint64(0)
+
+type ZipDir struct {
 	mutableNode
 	root *ZipRoot
 	path string
 }
 
-var _ = (fs.NodeGetattrer)((*zipDir)(nil))
-var _ = (fs.NodeLookuper)((*zipDir)(nil))
-var _ = (fs.NodeReaddirer)((*zipDir)(nil))
+var _ = (fs.NodeGetattrer)((*ZipDir)(nil))
+var _ = (fs.NodeLookuper)((*ZipDir)(nil))
+var _ = (fs.NodeReaddirer)((*ZipDir)(nil))
 
-func (zr *zipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+func (zr *ZipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 
 	zip, err := zr.root.GetZip()
 	if err != nil {
@@ -37,7 +39,8 @@ func (zr *zipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 		out.Ino = d.ino
 
 		if d.fileData == nil {
-			ch := zr.NewInode(ctx, newZipDir(zr.root, fullPath), fs.StableAttr{
+			zipDir := NewZipDir(zr.root, fullPath)
+			ch := zr.NewInode(ctx, &zipDir, fs.StableAttr{
 				Mode: fuse.S_IFDIR,
 				Ino:  d.ino,
 				Gen:  newGen,
@@ -57,7 +60,7 @@ func (zr *zipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 
 }
 
-func (r *zipDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+func (r *ZipDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	zip, err := r.root.GetZip()
 	if err != nil {
 		return nil, syscall.ENOENT
@@ -85,14 +88,14 @@ func (r *zipDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 
 }
 
-func (r *zipDir) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+func (r *ZipDir) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	// out.Mode = 0755
 	// out.Owner = fuse.Owner{Uid: uint32(os.Getuid()), Gid: uint32(os.Getgid())} // memo
 	return 0
 }
 
-func newZipDir(root *ZipRoot, path string) *zipDir {
-	return &zipDir{
+func NewZipDir(root *ZipRoot, path string) ZipDir {
+	return ZipDir{
 		root: root,
 		path: path,
 	}

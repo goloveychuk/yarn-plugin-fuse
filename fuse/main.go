@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"goloveychuk/yarn-fuse/zip"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -29,12 +30,11 @@ import (
 	"github.com/pkg/profile"
 )
 
-var ZIP_GETTER *zipGetter
+var ZIP_GETTER zip.IZipGetter
 
 const INO_STEP = uint64(1_000_000_000)
 
 var last_ino = uint64(0)
-var last_gen = uint64(0)
 
 var inoCache *inoCacheStr
 
@@ -47,94 +47,40 @@ type inoCacheStr struct {
 	mu sync.Mutex
 }
 
-type depJson struct {
-	LinkType  string                    //SOFT HARD
-	Children2 map[string]dependencyRoot `json:"Children"`
-	Target    string
-}
-
 type dependencyRoot struct {
-	depJson
-	inoGen inoGen
+	LinkType  string                     //SOFT HARD
+	Children2 map[string]*dependencyRoot `json:"Children"`
+	Target    string
+	inoGen    inoGen
 }
 
 type dependencyNode struct {
 	dependencyRoot
-	zipDir
-}
-
-func copyDepRoot(orig dependencyRoot) dependencyRoot {
-	copy := orig
-	copy.Children2 = make(map[string]dependencyRoot)
-	for k, v := range orig.Children2 {
-		copy.Children2[k] = v
-	}
-	return copy
+	zip.ZipDir
 }
 
 var _ = (fs.NodeGetattrer)((*dependencyNode)(nil))
-
-// var _ = (fs.NodeOnAdder)((*dependencyNode)(nil))
 var _ = (fs.NodeLookuper)((*dependencyNode)(nil))
 var _ = (fs.NodeReaddirer)((*dependencyNode)(nil))
 
-func (this *dependencyRoot) UnmarshalJSON(b []byte) error {
-	res := &depJson{}
-	if err := json.Unmarshal(b, res); err != nil {
-		return err
+func (this *dependencyRoot) init() {
+	this.inoGen = getInoStart(this.LinkType, this.Target)
+	for _, dep := range this.Children2 {
+		dep.init()
 	}
-	this.LinkType = res.LinkType
-	this.Children2 = res.Children2
-	this.Target = res.Target
-	this.inoGen = getInoStart(res.LinkType, res.Target)
-	// fmt.Println("inoStart", this.inoStart, this.Target)
-	return nil
 }
-
-// func addChildren(ctx context.Context, r *fs.Inode, children map[string]*dependencyNode) {
-// 	for name, dep := range children {
-// 		if dep.LinkType == "SOFT" {
-// 			if dep.Target == "" {
-// 				log.Fatalf("Target is empty for %s", name)
-// 			}
-// 			ch := r.NewPersistentInode(ctx, &fs.MemSymlink{
-// 				Data: []byte(dep.Target),
-// 			}, fs.StableAttr{Mode: syscall.S_IFLNK})
-// 			r.AddChild(name, ch, false)
-// 		} else {
-// 			if dep.Target == "" {
-// 				ch := r.NewPersistentInode(ctx, dep, fs.StableAttr{Mode: fuse.S_IFDIR})
-// 				r.AddChild(name, ch, false)
-// 			} else {
-// 				parts := strings.SplitN(dep.Target, ".zip/", 2)
-
-// 				root, err := NewZipTree(parts[0]+".zip", parts[1])
-// 				if err != nil {
-// 					log.Fatal(err)
-// 				}
-// 				ch := r.NewPersistentInode(ctx, root,
-// 					fs.StableAttr{Mode: fuse.S_IFDIR})
-// 				r.AddChild(name, ch, false)
-// 				addChildren(ctx, ch, dep.Children)
-// 				for name := range dep.Children {
-// 					root.AddStaticChildren(name)
-// 				}
-// 			}
-// 		}
-// 	}
-// }
 
 func (r *dependencyNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	lst := make([]fuse.DirEntry, 0, len(r.Children2))
 	for name, ch := range r.Children2 {
 		lst = append(lst, fuse.DirEntry{
-			Mode: getMode(&ch),
+			Mode: getMode(ch),
 			Name: name,
 			Ino:  ch.inoGen.ino,
 		})
 	}
 	if r.Target != "" && r.LinkType == "HARD" {
-		zipList, err := r.zipDir.Readdir(ctx)
+		zipList, err := r.ZipDir.Readdir(ctx)
 		if err != 0 {
 			return zipList, err
 		}
@@ -182,7 +128,7 @@ func (r *dependencyNode) Lookup(ctx context.Context, name string, out *fuse.Entr
 	ch, attr := r.dependencyRoot.GetChild(ctx, name, out)
 	if ch == nil {
 		if r.Target != "" && r.LinkType == "HARD" {
-			return r.zipDir.Lookup(ctx, name, out)
+			return r.ZipDir.Lookup(ctx, name, out)
 		}
 		return nil, syscall.ENOENT
 	}
@@ -197,7 +143,7 @@ func (r *dependencyRoot) GetChild(ctx context.Context, name string, out *fuse.En
 		return nil, fs.StableAttr{}
 	}
 	ino := dep.inoGen.ino
-	attr := fs.StableAttr{Mode: getMode(&dep), Ino: ino, Gen: dep.inoGen.gen}
+	attr := fs.StableAttr{Mode: getMode(dep), Ino: ino, Gen: dep.inoGen.gen}
 
 	if dep.LinkType == "SOFT" {
 		if dep.Target == "" {
@@ -209,18 +155,16 @@ func (r *dependencyRoot) GetChild(ctx context.Context, name string, out *fuse.En
 		return ch, attr
 	} else {
 		if dep.Target == "" {
-			return &dependencyNode{dependencyRoot: copyDepRoot(dep)}, attr
+			return &dependencyNode{dependencyRoot: *dep}, attr
 		} else {
 			parts := strings.SplitN(dep.Target, ".zip/", 2)
-			root, err := NewZipTree(parts[0]+".zip", parts[1], ino+1)
+			root, err := zip.NewZipTree(ZIP_GETTER, parts[0]+".zip", parts[1], ino+1)
 			if err != nil {
 				log.Fatal(err)
 			}
+
 			// fmt.Println(dep.Target, ino+1, "ino")
-			rootNode := &dependencyNode{dependencyRoot: copyDepRoot(dep), zipDir: zipDir{
-				root: root,
-				path: "",
-			}}
+			rootNode := &dependencyNode{dependencyRoot: *dep, ZipDir: zip.NewZipDir(root, "")}
 
 			return rootNode, attr
 			// r.AddChild(name, ch, false)
@@ -261,6 +205,12 @@ func isExists(path string) bool {
 
 type FuseData struct {
 	Roots map[string]dependencyRoot
+}
+
+func (this *FuseData) init() {
+	for _, root := range this.Roots {
+		root.init()
+	}
 }
 
 func runGCInterval(interval time.Duration) {
@@ -304,6 +254,7 @@ func main() {
 	if err := json.Unmarshal(data, fuseData); err != nil {
 		log.Fatal(err)
 	}
+	fuseData.init()
 	// fmt.Println(fuseData.Roots)
 	servers := make([]*fuse.Server, 0)
 
@@ -316,7 +267,7 @@ func main() {
 	// loopback, err := fs.NewLoopbackRoot("/Users/vadymh/work/thunderbolt")
 	// toMount = append(toMount, ToMount{"/Users/vadymh/work/thunderbolt2/test", loopback})
 	close := make(chan os.Signal, 10)
-	ZIP_GETTER = createZipGetter()
+	ZIP_GETTER = zip.CreateZipGetter()
 	for _, mount := range toMount {
 		println("Mounting", mount.path)
 		if isExists(mount.path) {

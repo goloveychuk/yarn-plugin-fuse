@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package main
+package zip
 
 import (
 	"path/filepath"
@@ -11,11 +11,12 @@ import (
 type ZipRoot struct {
 	stripPrefix string
 	zipPath     string
-	inoStart2   uint64
+	inoStart    uint64
+	zipGetter   IZipGetter
 }
 
 func (this *ZipRoot) GetZip() (*proccessedZip, error) {
-	return ZIP_GETTER.GetZip(this.zipPath, this.stripPrefix, this.inoStart2)
+	return this.zipGetter.GetZip(this.zipPath, this.stripPrefix, this.inoStart)
 	// if this.zip == nil {
 	// 	zip, err := this._zipGetter.GetZip(this.zipPath, this.stripPrefix, this.inoStart)
 	// 	if err != nil {
@@ -71,8 +72,8 @@ func (this *ZipRoot) GetZip() (*proccessedZip, error) {
 // }
 
 // NewZipTree creates a new file-system for the zip file named name.
-func NewZipTree(name string, stripPrefix string, inoStart uint64) (*ZipRoot, error) {
+func NewZipTree(zipGetter IZipGetter, name string, stripPrefix string, inoStart uint64) (*ZipRoot, error) {
 	stripPrefix = filepath.Clean(stripPrefix)
-	root := &ZipRoot{zipPath: name, stripPrefix: stripPrefix, inoStart2: inoStart}
+	root := &ZipRoot{zipPath: name, stripPrefix: stripPrefix, inoStart: inoStart, zipGetter: zipGetter}
 	return root, nil
 }
