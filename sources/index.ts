@@ -6,6 +6,7 @@ import {
   formatUtils,
   Plugin,
   Hooks,
+  InstallPackageExtraApi,
 } from '@yarnpkg/core';
 import {
   Locator,
@@ -27,22 +28,27 @@ import {
   Configuration,
 } from '@yarnpkg/core';
 import { MessageName, Project, FetchResult, Installer } from '@yarnpkg/core';
-import { PortablePath, npath, ppath, Filename } from '@yarnpkg/fslib';
+import { PortablePath, npath, ppath, Filename, AliasFS,CwdFS } from '@yarnpkg/fslib';
 import { VirtualFS, xfs, FakeFS, NativePath } from '@yarnpkg/fslib';
 import { ZipOpenFS } from '@yarnpkg/libzip';
-import { buildNodeModulesTree, NodeModulesTree } from '@yarnpkg/nm';
+import { buildNodeModulesTree } from '@yarnpkg/nm';
 import {
   NodeModulesLocatorMap,
   buildLocatorMap,
   NodeModulesHoistingLimits,
 } from '@yarnpkg/nm';
-import { parseSyml } from '@yarnpkg/parsers';
-import { jsInstallUtils } from '@yarnpkg/plugin-pnp';
+import { jsInstallUtils, pnpUtils } from '@yarnpkg/plugin-pnp';
 import { PnpApi, PackageInformation } from '@yarnpkg/pnp';
 import { FuseData, FuseNode } from './types';
-import { inspect } from 'util';
 
 const NODE_MODULES = `node_modules` as Filename;
+
+
+const FORCED_UNPLUG_PACKAGES = new Set([
+  // Contains native binaries
+  structUtils.makeIdent(null, `open`).identHash,
+  structUtils.makeIdent(null, `opn`).identHash,
+]);
 
 type LocatorKey = string;
 
@@ -358,14 +364,19 @@ async function extractCustomPackageData(
     manifest: {
       bin: manifest.bin,
       scripts: manifest.scripts,
+      preferUnplugged: manifest.preferUnplugged,
     },
     misc: {
       hasBindingGyp: jsInstallUtils.hasBindingGyp(fetchResult),
+      extractHint: jsInstallUtils.getExtractHint(fetchResult),
     },
   };
 }
 
+
 class FuseInstaller implements Installer {
+  private readonly asyncActions = new miscUtils.AsyncActions(10);
+
   private localStore: Map<
     LocatorHash,
     {
@@ -379,7 +390,7 @@ class FuseInstaller implements Installer {
   private realLocatorChecksums: Map<LocatorHash, string | null> = new Map();
 
   constructor(private opts: LinkOptions) {
-    // Nothing to do
+
   }
 
   private customData: {
@@ -392,11 +403,65 @@ class FuseInstaller implements Installer {
     this.customData = customData;
   }
 
-  async installPackage(pkg: Package, fetchResult: FetchResult) {
-    const packageLocation = ppath.resolve(
-      fetchResult.packageFs.getRealPath(),
-      fetchResult.prefixPath,
-    );
+  private readonly unpluggedPaths: Set<string> = new Set();
+
+  private async unplugPackageIfNeeded(pkg: Package, customPackageData: CustomPackageData, fetchResult: FetchResult, dependencyMeta: DependencyMeta, api: InstallPackageExtraApi) {
+    if (this.shouldBeUnplugged(pkg, customPackageData, dependencyMeta)) {
+      return this.unplugPackage(pkg, fetchResult, api);
+    } else {
+      return fetchResult.packageFs;
+    }
+  }
+
+  private shouldBeUnplugged(pkg: Package, customPackageData: CustomPackageData, dependencyMeta: DependencyMeta) {
+    if (typeof dependencyMeta.unplugged !== `undefined`)
+      return dependencyMeta.unplugged;
+
+    if (FORCED_UNPLUG_PACKAGES.has(pkg.identHash))
+      return true;
+
+    if (pkg.conditions != null)
+      return true;
+
+    if (customPackageData.manifest.preferUnplugged !== null)
+      return customPackageData.manifest.preferUnplugged;
+
+    const buildRequest = jsInstallUtils.extractBuildRequest(pkg, customPackageData, dependencyMeta, {configuration: this.opts.project.configuration});
+    if (buildRequest?.skipped === false || customPackageData.misc.extractHint)
+      return true;
+
+    return false;
+  }
+
+  private async unplugPackage(locator: Locator, fetchResult: FetchResult, api: InstallPackageExtraApi) {
+    // console.log('unplugPackage', locator.name, locator.reference)
+    const unplugPath = pnpUtils.getUnpluggedPath(locator, {configuration: this.opts.project.configuration}).replace('unplugged', 'unplugged2');
+    if (this.opts.project.disabledLocators.has(locator.locatorHash))
+      return new AliasFS(unplugPath, {baseFs: fetchResult.packageFs, pathUtils: ppath});
+
+    this.unpluggedPaths.add(unplugPath);
+
+    api.holdFetchResult(this.asyncActions.set(locator.locatorHash, async () => {
+      const readyFile = ppath.join(unplugPath, fetchResult.prefixPath, `.ready`);
+      if (await xfs.existsPromise(readyFile))
+        return;
+
+      // Delete any build state for the locator so it can run anew, this allows users
+      // to remove `.yarn/unplugged` and have the builds run again
+      this.opts.project.storedBuildState.delete(locator.locatorHash);
+
+      await xfs.mkdirPromise(unplugPath, {recursive: true});
+      await xfs.copyPromise(unplugPath, PortablePath.dot, {baseFs: fetchResult.packageFs, overwrite: false});
+
+      await xfs.writeFilePromise(readyFile, ``);
+    }));
+
+    return new CwdFS(unplugPath);
+  }
+
+
+  async installPackage(pkg: Package, fetchResult: FetchResult, api: InstallPackageExtraApi) {
+    
 
     let customPackageData = this.customData.store.get(pkg.locatorHash);
     if (typeof customPackageData === `undefined`) {
@@ -436,6 +501,31 @@ class FuseInstaller implements Installer {
         packagePeers.add(structUtils.stringifyIdent(descriptor));
       }
     }
+    const isVirtual = structUtils.isVirtualLocator(pkg);
+
+    const hasVirtualInstances =
+      // Only packages with peer dependencies have virtual instances
+      pkg.peerDependencies.size > 0 &&
+      // Only packages with peer dependencies have virtual instances
+      !isVirtual;
+
+    const mayNeedToBeUnplugged =
+      // Virtual instance templates don't need to be unplugged, since they don't truly exist
+      !hasVirtualInstances &&
+      // We never need to unplug soft links, since we don't control them
+      pkg.linkType !== LinkType.SOFT;
+
+    const dependencyMeta = this.opts.project.getDependencyMeta(pkg, pkg.version)
+    let res: FakeFS<PortablePath> = fetchResult.packageFs;
+    
+    if (mayNeedToBeUnplugged) {
+      res = await this.unplugPackageIfNeeded(pkg, customPackageData, fetchResult, dependencyMeta, api)
+    }
+    
+    const packageLocation = ppath.resolve(
+      res.getRealPath(),
+      fetchResult.prefixPath,
+    );
 
     const pnpNode: PackageInformation<NativePath> = {
       packageLocation: `${npath.fromPortablePath(packageLocation)}/`,
@@ -448,7 +538,7 @@ class FuseInstaller implements Installer {
     this.localStore.set(pkg.locatorHash, {
       pkg,
       customPackageData,
-      dependencyMeta: this.opts.project.getDependencyMeta(pkg, pkg.version),
+      dependencyMeta,
       pnpNode,
     });
 
@@ -457,7 +547,7 @@ class FuseInstaller implements Installer {
       ? fetchResult.checksum.substring(fetchResult.checksum.indexOf(`/`) + 1)
       : null;
     this.realLocatorChecksums.set(realLocator.locatorHash, checksum);
-
+    
     return {
       packageLocation,
       buildRequest: null,
@@ -835,6 +925,8 @@ class FuseInstaller implements Installer {
       console.log(Date.now() - started);
     }
 
+    await this.asyncActions.wait();
+
     return {
       customData: this.customData,
       records: installStatuses,
@@ -871,6 +963,9 @@ const plugin: Plugin<Hooks> = {
   linkers: [FuseLinker],
   commands: [],
   hooks: {
+    async populateYarnPaths(project, define) {
+      define(project.configuration.get(`pnpUnpluggedFolder`));
+    },
     afterAllInstalled(project, options) {},
   },
 };

@@ -252,8 +252,8 @@ func main() {
 		log.Fatal("Usage:\n  hello MOUNTPOINT")
 	}
 	if *prof {
-		defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")).Stop()
-		defer profile.Start(profile.MemProfile).Stop()
+		defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")). // profile.MemProfile
+											Stop()
 		go func() {
 			http.ListenAndServe(":8080", nil)
 		}()
