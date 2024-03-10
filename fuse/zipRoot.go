@@ -5,30 +5,17 @@
 package main
 
 import (
-	"context"
 	"path/filepath"
-	"syscall"
-
-	"github.com/hanwen/go-fuse/v2/fs"
-	"github.com/hanwen/go-fuse/v2/fuse"
 )
 
-type LookableListable interface {
-	GetChild(parent *fs.Inode, ctx context.Context, name string, out *fuse.EntryOut) *fs.Inode
-	Readdir(ctx context.Context) (fs.DirStream, syscall.Errno)
-}
 type ZipRoot struct {
-	zipDir
-	stripPrefix    string
-	staticLookable LookableListable
-	// zip         *proccessedZip
-	zipPath  string
-	inoStart uint64
-	// staticChildren map[string]bool //arr?
+	stripPrefix string
+	zipPath     string
+	inoStart2   uint64
 }
 
 func (this *ZipRoot) GetZip() (*proccessedZip, error) {
-	return ZIP_GETTER.GetZip(this.zipPath, this.stripPrefix, this.inoStart)
+	return ZIP_GETTER.GetZip(this.zipPath, this.stripPrefix, this.inoStart2)
 	// if this.zip == nil {
 	// 	zip, err := this._zipGetter.GetZip(this.zipPath, this.stripPrefix, this.inoStart)
 	// 	if err != nil {
@@ -49,28 +36,6 @@ func (this *ZipRoot) GetZip() (*proccessedZip, error) {
 	// 	this.zip = zip
 	// }
 	// return this.zip, nil
-}
-
-var _ = (fs.NodeLookuper)((*ZipRoot)(nil))
-var _ = (fs.NodeReaddirer)((*ZipRoot)(nil))
-
-func (r *ZipRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	staticChildren, err := r.root.staticLookable.Readdir(ctx)
-	if err != 0 {
-		return staticChildren, err
-	}
-	zipList, err := r.zipDir.Readdir(ctx)
-	if err != 0 {
-		return zipList, err
-	}
-
-	return NewMultiDirStream(staticChildren, zipList), 0
-}
-func (this *ZipRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	if node := this.staticLookable.GetChild(&this.Inode, ctx, name, out); node != nil {
-		return node, 0
-	}
-	return this.zipDir.Lookup(ctx, name, out)
 }
 
 // func (zr *ZipRoot) AddStaticChildren(name string) { //mb rewrite
@@ -106,9 +71,8 @@ func (this *ZipRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut
 // }
 
 // NewZipTree creates a new file-system for the zip file named name.
-func NewZipTree(staticLookable LookableListable, name string, stripPrefix string, inoStart uint64) (*ZipRoot, error) {
+func NewZipTree(name string, stripPrefix string, inoStart uint64) (*ZipRoot, error) {
 	stripPrefix = filepath.Clean(stripPrefix)
-	root := &ZipRoot{staticLookable: staticLookable, zipPath: name, stripPrefix: stripPrefix, inoStart: inoStart}
-	root.zipDir = *newZipDir(root, "")
+	root := &ZipRoot{zipPath: name, stripPrefix: stripPrefix, inoStart2: inoStart}
 	return root, nil
 }

@@ -33,18 +33,22 @@ func (zr *zipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 			return nil, syscall.ENOENT
 		}
 		fullPath := path.Join(zr.path, name)
+		newGen := atomic.AddUint64(&last_gen, 1)
+		out.Ino = d.ino
+
 		if d.fileData == nil {
 			ch := zr.NewInode(ctx, newZipDir(zr.root, fullPath), fs.StableAttr{
 				Mode: fuse.S_IFDIR,
-				Gen:  atomic.AddUint64(&lastGen, 1),
 				Ino:  d.ino,
+				Gen:  newGen,
 			})
 			return ch, 0
 		}
+		out.Attr = d.fileData.attr
 		ch := zr.NewInode(ctx, &zipFile{fileData: d.fileData}, fs.StableAttr{
 			Mode: fuse.S_IFREG,
-			Gen:  atomic.AddUint64(&lastGen, 1),
 			Ino:  d.ino,
+			Gen:  newGen,
 		})
 		return ch, 0
 	}

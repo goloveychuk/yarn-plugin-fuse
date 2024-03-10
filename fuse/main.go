@@ -33,35 +33,52 @@ var ZIP_GETTER *zipGetter
 
 const INO_STEP = uint64(1_000_000_000)
 
-var lastGen uint64 = 0
 var last_ino = uint64(0)
+var last_gen = uint64(0)
 
 var inoCache *inoCacheStr
 
+type inoGen struct {
+	ino uint64
+	gen uint64
+}
 type inoCacheStr struct {
-	m  map[string]uint64
+	m  map[string]inoGen
 	mu sync.Mutex
 }
 
 type depJson struct {
-	LinkType  string                     //SOFT HARD
-	Children2 map[string]*DependencyRoot `json:"Children"`
+	LinkType  string                    //SOFT HARD
+	Children2 map[string]dependencyRoot `json:"Children"`
 	Target    string
 }
 
-type DependencyRoot struct {
-	fs.Inode
+type dependencyRoot struct {
 	depJson
-	inoStart uint64
+	inoGen inoGen
 }
 
-var _ = (fs.NodeGetattrer)((*DependencyRoot)(nil))
+type dependencyNode struct {
+	dependencyRoot
+	zipDir
+}
 
-// var _ = (fs.NodeOnAdder)((*DependencyRoot)(nil))
-var _ = (fs.NodeLookuper)((*DependencyRoot)(nil))
-var _ = (fs.NodeReaddirer)((*DependencyRoot)(nil))
+func copyDepRoot(orig dependencyRoot) dependencyRoot {
+	copy := orig
+	copy.Children2 = make(map[string]dependencyRoot)
+	for k, v := range orig.Children2 {
+		copy.Children2[k] = v
+	}
+	return copy
+}
 
-func (this *DependencyRoot) UnmarshalJSON(b []byte) error {
+var _ = (fs.NodeGetattrer)((*dependencyNode)(nil))
+
+// var _ = (fs.NodeOnAdder)((*dependencyNode)(nil))
+var _ = (fs.NodeLookuper)((*dependencyNode)(nil))
+var _ = (fs.NodeReaddirer)((*dependencyNode)(nil))
+
+func (this *dependencyRoot) UnmarshalJSON(b []byte) error {
 	res := &depJson{}
 	if err := json.Unmarshal(b, res); err != nil {
 		return err
@@ -69,12 +86,12 @@ func (this *DependencyRoot) UnmarshalJSON(b []byte) error {
 	this.LinkType = res.LinkType
 	this.Children2 = res.Children2
 	this.Target = res.Target
-	this.inoStart = getInoStart(res.LinkType, res.Target)
+	this.inoGen = getInoStart(res.LinkType, res.Target)
 	// fmt.Println("inoStart", this.inoStart, this.Target)
 	return nil
 }
 
-// func addChildren(ctx context.Context, r *fs.Inode, children map[string]*DependencyRoot) {
+// func addChildren(ctx context.Context, r *fs.Inode, children map[string]*dependencyNode) {
 // 	for name, dep := range children {
 // 		if dep.LinkType == "SOFT" {
 // 			if dep.Target == "" {
@@ -107,19 +124,26 @@ func (this *DependencyRoot) UnmarshalJSON(b []byte) error {
 // 	}
 // }
 
-func (r *DependencyRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+func (r *dependencyNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	lst := make([]fuse.DirEntry, 0, len(r.Children2))
 	for name, ch := range r.Children2 {
 		lst = append(lst, fuse.DirEntry{
-			Mode: getMode(ch),
+			Mode: getMode(&ch),
 			Name: name,
-			Ino:  ch.inoStart,
+			Ino:  ch.inoGen.ino,
 		})
+	}
+	if r.Target != "" && r.LinkType == "HARD" {
+		zipList, err := r.zipDir.Readdir(ctx)
+		if err != 0 {
+			return zipList, err
+		}
+		return NewMultiDirStream(fs.NewListDirStream(lst), zipList), 0
 	}
 	return fs.NewListDirStream(lst), 0
 }
 
-func getMode(dep *DependencyRoot) uint32 {
+func getMode(dep *dependencyRoot) uint32 {
 	if dep.LinkType == "SOFT" {
 		return syscall.S_IFLNK
 	} else {
@@ -127,83 +151,93 @@ func getMode(dep *DependencyRoot) uint32 {
 	}
 }
 
-func getInoStart(linkType string, target string) uint64 {
+func getInoStart(linkType string, target string) inoGen {
 
 	// breaks find node_modules -type f | wc -l
 	if linkType == "HARD" && target != "" {
 		inoCache.mu.Lock()
 		defer inoCache.mu.Unlock()
 		if ino, ok := inoCache.m[target]; ok {
+			ino.gen++
+			inoCache.m[target] = ino
+			// fmt.Print("cached", target, ino, "\n")
 			return ino
 			// fmt.Print("cached", r.Target, ino, "\n")
 		} else {
 			newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
-			inoCache.m[target] = newInoStart
-			return newInoStart
+			inoGen := inoGen{ino: newInoStart, gen: 1}
+			inoCache.m[target] = inoGen
+			return inoGen
 		}
 	} else {
 		newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
-		return newInoStart
+		return inoGen{ino: newInoStart, gen: 1}
 
 	}
 	// r.inoStart = newInoStart
 	// }
 
 }
-func (r *DependencyRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	ch := r.GetChild(&r.Inode, ctx, name, out)
+func (r *dependencyNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	ch, attr := r.dependencyRoot.GetChild(ctx, name, out)
 	if ch == nil {
+		if r.Target != "" && r.LinkType == "HARD" {
+			return r.zipDir.Lookup(ctx, name, out)
+		}
 		return nil, syscall.ENOENT
 	}
-	return ch, 0
+	// out.Ino = attr.Ino
+	return r.NewInode(ctx, ch, attr), 0
 }
 
-func (r *DependencyRoot) GetChild(parent *fs.Inode, ctx context.Context, name string, out *fuse.EntryOut) *fs.Inode {
+func (r *dependencyRoot) GetChild(ctx context.Context, name string, out *fuse.EntryOut) (fs.InodeEmbedder, fs.StableAttr) {
 	dep, ok := r.Children2[name]
 	if !ok {
 		// fmt.Println("GetChild", name, ok, r.Children2, r.Target, r.inoStart)
-		return nil
+		return nil, fs.StableAttr{}
 	}
-	ino := dep.inoStart
-	attr := fs.StableAttr{Mode: getMode(dep), Ino: ino, Gen: atomic.AddUint64(&lastGen, 1)}
+	ino := dep.inoGen.ino
+	attr := fs.StableAttr{Mode: getMode(&dep), Ino: ino, Gen: dep.inoGen.gen}
 
 	if dep.LinkType == "SOFT" {
 		if dep.Target == "" {
 			log.Fatalf("Target is empty for %s", name)
 		}
-		ch := parent.NewInode(ctx, &fs.MemSymlink{
+		ch := &fs.MemSymlink{
 			Data: []byte(dep.Target),
-		}, attr)
-		return ch
+		}
+		return ch, attr
 	} else {
 		if dep.Target == "" {
-			ch := parent.NewInode(ctx, dep, attr) //could be inited multiple times (if ops.embed().bridge != nil {return ops.embed() })
-			return ch
+			return &dependencyNode{dependencyRoot: copyDepRoot(dep)}, attr
 		} else {
 			parts := strings.SplitN(dep.Target, ".zip/", 2)
-
-			root, err := NewZipTree(dep, parts[0]+".zip", parts[1], ino+1)
+			root, err := NewZipTree(parts[0]+".zip", parts[1], ino+1)
 			if err != nil {
 				log.Fatal(err)
 			}
+			// fmt.Println(dep.Target, ino+1, "ino")
+			rootNode := &dependencyNode{dependencyRoot: copyDepRoot(dep), zipDir: zipDir{
+				root: root,
+				path: "",
+			}}
 
-			ch := parent.NewInode(ctx, root, attr)
+			return rootNode, attr
 			// r.AddChild(name, ch, false)
 			// addChildren(ctx, ch, dep.Children) //todo
 			// for name := range dep.Children {
 			// 	root.AddStaticChildren(name)
 			// }
-			return ch
 		}
 	}
 
 }
 
-// func (r *DependencyRoot) OnAdd(ctx context.Context) {
+// func (r *dependencyNode) OnAdd(ctx context.Context) {
 // 	addChildren(ctx, &r.Inode, r.Children)
 // }
 
-func (r *DependencyRoot) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+func (r *dependencyNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	// out.Mode = 0755
 	// out.Owner = fuse.Owner{Uid: uint32(os.Getuid()), Gid: uint32(os.Getgid())} // memo
 	return 0
@@ -226,7 +260,7 @@ func isExists(path string) bool {
 }
 
 type FuseData struct {
-	Roots map[string]*DependencyRoot
+	Roots map[string]dependencyRoot
 }
 
 func runGCInterval(interval time.Duration) {
@@ -263,18 +297,21 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	inoCache = &inoCacheStr{m: make(map[string]uint64)}
+	inoCache = &inoCacheStr{m: make(map[string]inoGen)}
 
 	fuseData := &FuseData{}
 
 	if err := json.Unmarshal(data, fuseData); err != nil {
 		log.Fatal(err)
 	}
+	// fmt.Println(fuseData.Roots)
 	servers := make([]*fuse.Server, 0)
 
 	toMount := make([]ToMount, 0)
 	for mount, root := range fuseData.Roots {
-		toMount = append(toMount, ToMount{mount, root})
+		node := &dependencyNode{dependencyRoot: root}
+
+		toMount = append(toMount, ToMount{mount, node})
 	}
 	// loopback, err := fs.NewLoopbackRoot("/Users/vadymh/work/thunderbolt")
 	// toMount = append(toMount, ToMount{"/Users/vadymh/work/thunderbolt2/test", loopback})
@@ -292,15 +329,15 @@ func main() {
 		}
 		opts := &fs.Options{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}
 
-		timeout := 10 * time.Second
-		timeout2 := 10 * time.Second
-		// attrTimeout := 10 * time.Second
-		// opts.AttrTimeout = &attrTimeout
+		timeout := 10 * time.Minute
+		// timeout2 := 10 * time.Second
+		attrTimeout := 10 * time.Minute
+		opts.AttrTimeout = &attrTimeout
 		opts.EntryTimeout = &timeout
 		opts.DirectMount = true
-		opts.NegativeTimeout = &timeout2
+		// opts.NegativeTimeout = &timeout2
 
-		opts.MaxBackground = 30
+		// opts.MaxBackground = 30
 		opts.Debug = *debug
 		opts.Options = []string{"vm.vfs_cache_pressure=10"}
 
