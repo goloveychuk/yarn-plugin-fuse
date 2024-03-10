@@ -56,12 +56,40 @@ type dependencyRoot struct {
 
 type dependencyNode struct {
 	dependencyRoot
+	fs.Inode
+}
+
+type zipNode struct {
+	dependencyRoot
 	zip.ZipDir
 }
 
 var _ = (fs.NodeGetattrer)((*dependencyNode)(nil))
 var _ = (fs.NodeLookuper)((*dependencyNode)(nil))
 var _ = (fs.NodeReaddirer)((*dependencyNode)(nil))
+var _ = (fs.NodeLookuper)((*zipNode)(nil))
+var _ = (fs.NodeReaddirer)((*zipNode)(nil))
+
+func (this *zipNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	// fmt.Println("Lookup", name
+	if node, attr := this.dependencyRoot.GetChild(ctx, name, out); node != nil {
+		return this.NewInode(ctx, node, attr), 0
+	}
+	return this.ZipDir.Lookup(ctx, name, out)
+}
+
+func (this *zipNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	list, err := this.ZipDir.Readdir(ctx)
+	if err != 0 {
+		return list, err
+	}
+	list2, err := this.dependencyRoot.Readdir(ctx)
+
+	if err != 0 {
+		return list2, err
+	}
+	return NewMultiDirStream(list, list2), 0
+}
 
 func (this *dependencyRoot) init() {
 	this.inoGen = getInoStart(this.LinkType, this.Target)
@@ -70,7 +98,7 @@ func (this *dependencyRoot) init() {
 	}
 }
 
-func (r *dependencyNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+func (r *dependencyRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	lst := make([]fuse.DirEntry, 0, len(r.Children2))
 	for name, ch := range r.Children2 {
 		lst = append(lst, fuse.DirEntry{
@@ -78,13 +106,6 @@ func (r *dependencyNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 			Name: name,
 			Ino:  ch.inoGen.ino,
 		})
-	}
-	if r.Target != "" && r.LinkType == "HARD" {
-		zipList, err := r.ZipDir.Readdir(ctx)
-		if err != 0 {
-			return zipList, err
-		}
-		return NewMultiDirStream(fs.NewListDirStream(lst), zipList), 0
 	}
 	return fs.NewListDirStream(lst), 0
 }
@@ -98,7 +119,6 @@ func getMode(dep *dependencyRoot) uint32 {
 }
 
 func getInoStart(linkType string, target string) inoGen {
-
 	// breaks find node_modules -type f | wc -l
 	if linkType == "HARD" && target != "" {
 		inoCache.mu.Lock()
@@ -122,17 +142,13 @@ func getInoStart(linkType string, target string) inoGen {
 	}
 	// r.inoStart = newInoStart
 	// }
-
 }
+
 func (r *dependencyNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	ch, attr := r.dependencyRoot.GetChild(ctx, name, out)
 	if ch == nil {
-		if r.Target != "" && r.LinkType == "HARD" {
-			return r.ZipDir.Lookup(ctx, name, out)
-		}
 		return nil, syscall.ENOENT
 	}
-	// out.Ino = attr.Ino
 	return r.NewInode(ctx, ch, attr), 0
 }
 
@@ -164,7 +180,7 @@ func (r *dependencyRoot) GetChild(ctx context.Context, name string, out *fuse.En
 			}
 
 			// fmt.Println(dep.Target, ino+1, "ino")
-			rootNode := &dependencyNode{dependencyRoot: *dep, ZipDir: zip.NewZipDir(root, "")}
+			rootNode := &zipNode{dependencyRoot: *dep, ZipDir: zip.NewZipDir(root, "")}
 
 			return rootNode, attr
 			// r.AddChild(name, ch, false)
