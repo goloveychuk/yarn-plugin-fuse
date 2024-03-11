@@ -64,6 +64,30 @@ type zipNode struct {
 	zip.ZipDir
 }
 
+type lookbackNode struct {
+	dependencyRoot
+	fs.LoopbackNode
+}
+
+func (this *lookbackNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	if node, err := this.dependencyRoot.GetChild(ctx, &this.Inode, name, out); err != syscall.ENOENT {
+		return node, err
+	}
+	return this.LoopbackNode.Lookup(ctx, name, out)
+}
+
+func (this *lookbackNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	list, err := this.LoopbackNode.Readdir(ctx)
+	if err != 0 {
+		return list, err
+	}
+	list2, err := this.dependencyRoot.Readdir(ctx)
+	if err != 0 {
+		return list2, err
+	}
+	return NewMultiDirStream(list, list2), 0
+}
+
 var _ = (fs.NodeGetattrer)((*dependencyNode)(nil))
 var _ = (fs.NodeLookuper)((*dependencyNode)(nil))
 var _ = (fs.NodeReaddirer)((*dependencyNode)(nil))
@@ -71,9 +95,8 @@ var _ = (fs.NodeLookuper)((*zipNode)(nil))
 var _ = (fs.NodeReaddirer)((*zipNode)(nil))
 
 func (this *zipNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	// fmt.Println("Lookup", name
-	if node, attr := this.dependencyRoot.GetChild(ctx, name, out); node != nil {
-		return this.NewInode(ctx, node, attr), 0
+	if node, err := this.dependencyRoot.GetChild(ctx, &this.Inode, name, out); err != syscall.ENOENT {
+		return node, err
 	}
 	return this.ZipDir.Lookup(ctx, name, out)
 }
@@ -145,18 +168,14 @@ func getInoStart(linkType string, target string) inoGen {
 }
 
 func (r *dependencyNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	ch, attr := r.dependencyRoot.GetChild(ctx, name, out)
-	if ch == nil {
-		return nil, syscall.ENOENT
-	}
-	return r.NewInode(ctx, ch, attr), 0
+	return r.dependencyRoot.GetChild(ctx, &r.Inode, name, out)
 }
 
-func (r *dependencyRoot) GetChild(ctx context.Context, name string, out *fuse.EntryOut) (fs.InodeEmbedder, fs.StableAttr) {
+func (r *dependencyRoot) GetChild(ctx context.Context, parent *fs.Inode, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	dep, ok := r.Children2[name]
 	if !ok {
 		// fmt.Println("GetChild", name, ok, r.Children2, r.Target, r.inoStart)
-		return nil, fs.StableAttr{}
+		return nil, syscall.ENOENT
 	}
 	ino := dep.inoGen.ino
 	attr := fs.StableAttr{Mode: getMode(dep), Ino: ino, Gen: dep.inoGen.gen}
@@ -168,21 +187,44 @@ func (r *dependencyRoot) GetChild(ctx context.Context, name string, out *fuse.En
 		ch := &fs.MemSymlink{
 			Data: []byte(dep.Target),
 		}
-		return ch, attr
+		return parent.NewInode(ctx, ch, attr), 0
 	} else {
 		if dep.Target == "" {
-			return &dependencyNode{dependencyRoot: *dep}, attr
+			return parent.NewInode(ctx, &dependencyNode{dependencyRoot: *dep}, attr), 0
 		} else {
-			parts := strings.SplitN(dep.Target, ".zip/", 2)
-			root, err := zip.NewZipTree(ZIP_GETTER, parts[0]+".zip", parts[1], ino+1)
-			if err != nil {
-				log.Fatal(err)
+			if strings.Contains(dep.Target, ".zip") {
+				parts := strings.SplitN(dep.Target, ".zip/", 2)
+				root, err := zip.NewZipTree(ZIP_GETTER, parts[0]+".zip", parts[1], ino+1)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				// fmt.Println(dep.Target, ino+1, "ino")
+				rootNode := &zipNode{dependencyRoot: *dep, ZipDir: zip.NewZipDir(root, "")}
+
+				return parent.NewInode(ctx, rootNode, attr), 0
+			} else {
+				p := strings.TrimRight(dep.Target, "/")
+				var st syscall.Stat_t
+				err := syscall.Stat(p, &st)
+				if err != nil {
+					log.Fatal(err)
+				}
+				loopackRoot := &fs.LoopbackRoot{
+					Path: p,
+					Dev:  uint64(st.Dev),
+					NewNode: func(rootData *fs.LoopbackRoot, parent *fs.Inode, name string, st *syscall.Stat_t) fs.InodeEmbedder {
+						return &lookbackNode{dependencyRoot: *dep,
+							LoopbackNode: fs.LoopbackNode{
+								RootData: rootData,
+							},
+						}
+					},
+				}
+				rootInode := parent.NewInode(ctx, loopackRoot.NewNode(loopackRoot, nil, "", nil), attr)
+				loopackRoot.RootNode = rootInode
+				return rootInode, 0
 			}
-
-			// fmt.Println(dep.Target, ino+1, "ino")
-			rootNode := &zipNode{dependencyRoot: *dep, ZipDir: zip.NewZipDir(root, "")}
-
-			return rootNode, attr
 			// r.AddChild(name, ch, false)
 			// addChildren(ctx, ch, dep.Children) //todo
 			// for name := range dep.Children {
@@ -280,7 +322,7 @@ func main() {
 
 		toMount = append(toMount, ToMount{mount, node})
 	}
-	// loopback, err := fs.NewLoopbackRoot("/Users/vadymh/work/thunderbolt")
+	// loopback, err := fs.NewLoopbackRoot("/Users/vadymh/work/thunderbolt2/.yarn/unplugged2/@wix-ambassador-app-settings-service-virtual-56a26c1bac/node_modules/@wix/ambassador-app-settings-service")
 	// toMount = append(toMount, ToMount{"/Users/vadymh/work/thunderbolt2/test", loopback})
 	close := make(chan os.Signal, 10)
 	ZIP_GETTER = zip.CreateZipGetter()
