@@ -403,7 +403,8 @@ func main() {
 	// go http.Serve(listener, handler)
 
 	cleanup := func() {
-		<-time.After(10 * time.Second)
+
+		<-time.After(1 * time.Second)
 		// listener.Close()
 		for name, server := range servers {
 			println("unmounting\n", name)

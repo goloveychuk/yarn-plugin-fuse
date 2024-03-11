@@ -4,7 +4,7 @@ export interface FuseNode {
     // name: string
     target?: string
     linkType: 'HARD' | 'SOFT'
-    children?: Record<string, FuseNode>
+    children: Record<string, FuseNode>
 }
 
 

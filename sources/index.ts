@@ -37,6 +37,7 @@ import {
   AliasFS,
   CwdFS,
 } from '@yarnpkg/fslib';
+import {UsageError}                                                         from 'clipanion';
 import { VirtualFS, xfs, FakeFS, NativePath } from '@yarnpkg/fslib';
 import { ZipOpenFS } from '@yarnpkg/libzip';
 import { buildNodeModulesTree } from '@yarnpkg/nm';
@@ -79,6 +80,23 @@ type CustomPackageData = UnboxPromise<
   ReturnType<typeof extractCustomPackageData>
 >;
 
+interface InstallState {
+  locatorMap: Map<LocatorKey, { locations: PortablePath[]; }>
+}
+
+interface InstallStateJson {
+  locatorMap: Record<LocatorKey, PortablePath[]>;
+}
+
+function makeInstallState(locatorMap: NodeModulesLocatorMap): InstallStateJson {
+  const installState: InstallStateJson = {
+    locatorMap: {}
+  }
+  for (const [locatorKey, info] of locatorMap.entries()) {
+    installState.locatorMap[locatorKey] = info.locations;
+  }
+  return installState;
+}
 function isLinkLocator(locatorKey: LocatorKey): boolean {
   let descriptor = structUtils.parseDescriptor(locatorKey);
   if (structUtils.isVirtualDescriptor(descriptor))
@@ -351,6 +369,7 @@ function buildFuseTree(
           binDir.children[binName] = {
             linkType: LinkType.SOFT,
             target: binTarget,
+            children: {},
           };
         }
       }
@@ -863,120 +882,106 @@ class FuseInstaller implements Installer {
       },
     );
 
-    const installStatePath = ppath.join(
-      this.opts.project.cwd,
-      `.yarn/fuse-state.json`,
-    );
-    // console.log(locatorMap);
+    
+    // const installFuseTree: FuseData = { roots: {} };
 
-    // console.log(inspect(locationTree, { depth: 10 }));
-    const fuseState = buildFuseTree(locationTree, binSymlinks);
-    // console.log(tree)
-    await xfs.changeFilePromise(
-      installStatePath,
-      JSON.stringify(fuseState, null, 2),
-      {},
-    );
+    // for (const status of installStatuses) {
+    //   break;
+    //   const started = Date.now();
+    //   if (status.buildRequest.skipped) continue;
+    //   const unpluggedPath = getUnpluggedPath(status.locator, {
+    //     configuration: this.opts.project.configuration,
+    //   });
+    //   status.buildLocations = [unpluggedPath];
+    //   const rootSlot = this.localStore.get(status.locator.locatorHash);
+    //   console.log(unpluggedPath);
+    //   const rootInfo: PackageInformation<NativePath> = {
+    //     ...rootSlot.pnpNode,
+    //     packageLocation: `${npath.fromPortablePath(unpluggedPath)}/`,
+    //     // linkType: LinkType.SOFT,
+    //   };
 
-    const installFuseTree: FuseData = { roots: {} };
+    //   const otherPnpApi: PnpApi = {
+    //     ...pnpApi,
+    //     getDependencyTreeRoots: () => [],
+    //     findPackageLocator: (location) => {
+    //       if (location === rootInfo.packageLocation) {
+    //         return {
+    //           name: 'root',
+    //           reference: 'root',
+    //         };
+    //       }
+    //       throw new Error('not impl');
+    //     },
+    //     resolveVirtual: (path) => {
+    //       return npath.fromPortablePath(
+    //         VirtualFS.resolveVirtual(npath.toPortablePath(path)),
+    //       );
+    //     },
+    //     getPackageInformation: (pnpLocator) => {
+    //       if (pnpLocator.reference === null) {
+    //         return rootInfo;
+    //       }
+    //       if (pnpLocator.reference == 'root' && pnpLocator.name == 'root') {
+    //         return rootInfo;
+    //       }
+    //       const locator = structUtils.makeLocator(
+    //         structUtils.parseIdent(pnpLocator.name),
+    //         pnpLocator.reference,
+    //       );
 
-    for (const status of installStatuses) {
-      break;
-      const started = Date.now();
-      if (status.buildRequest.skipped) continue;
-      const unpluggedPath = getUnpluggedPath(status.locator, {
-        configuration: this.opts.project.configuration,
-      });
-      status.buildLocations = [unpluggedPath];
-      const rootSlot = this.localStore.get(status.locator.locatorHash);
-      console.log(unpluggedPath);
-      const rootInfo: PackageInformation<NativePath> = {
-        ...rootSlot.pnpNode,
-        packageLocation: `${npath.fromPortablePath(unpluggedPath)}/`,
-        // linkType: LinkType.SOFT,
-      };
+    //       const slot = this.localStore.get(locator.locatorHash);
+    //       if (typeof slot === `undefined`)
+    //         throw new Error(
+    //           `Assertion failed: Expected the package reference to have been registered`,
+    //         );
 
-      const otherPnpApi: PnpApi = {
-        ...pnpApi,
-        getDependencyTreeRoots: () => [],
-        findPackageLocator: (location) => {
-          if (location === rootInfo.packageLocation) {
-            return {
-              name: 'root',
-              reference: 'root',
-            };
-          }
-          throw new Error('not impl');
-        },
-        resolveVirtual: (path) => {
-          return npath.fromPortablePath(
-            VirtualFS.resolveVirtual(npath.toPortablePath(path)),
-          );
-        },
-        getPackageInformation: (pnpLocator) => {
-          if (pnpLocator.reference === null) {
-            return rootInfo;
-          }
-          if (pnpLocator.reference == 'root' && pnpLocator.name == 'root') {
-            return rootInfo;
-          }
-          const locator = structUtils.makeLocator(
-            structUtils.parseIdent(pnpLocator.name),
-            pnpLocator.reference,
-          );
+    //       return slot.pnpNode;
+    //     },
+    //   };
 
-          const slot = this.localStore.get(locator.locatorHash);
-          if (typeof slot === `undefined`)
-            throw new Error(
-              `Assertion failed: Expected the package reference to have been registered`,
-            );
+    //   const { tree, errors, preserveSymlinksRequired } = buildNodeModulesTree(
+    //     otherPnpApi,
+    //     {
+    //       pnpifyFs: false,
+    //       validateExternalSoftLinks: true,
+    //       hoistingLimitsByCwd,
+    //       project: this.opts.project,
+    //       selfReferencesByCwd,
+    //     },
+    //   );
+    //   if (!tree) {
+    //     for (const { messageName, text } of errors)
+    //       this.opts.report.reportError(messageName, text);
 
-          return slot.pnpNode;
-        },
-      };
+    //     return undefined;
+    //   }
+    //   const locatorMap = buildLocatorMap(tree);
+    //   const locationTree = buildLocationTree(locatorMap, {
+    //     skipPrefix: unpluggedPath,
+    //   });
+    //   // const binSymlinks = await createBinSymlinkMap(
+    //   //   locatorMap,
+    //   //   locationTree,
+    //   //   unpluggedPath,
+    //   //   {
+    //   //     loadManifest: async (locatorKey) => {
+    //   //       const locator = structUtils.parseLocator(locatorKey);
+    //   //       if (locator.reference === 'root' && locator.name === 'root') {
+    //   //         return rootSlot.customPackageData.manifest
+    //   //       }
+    //   //       const slot = this.localStore.get(locator.locatorHash);
+    //   //       if (typeof slot === `undefined`)
+    //   //         throw new Error(`Assertion failed: Expected the slot to exist`);
 
-      const { tree, errors, preserveSymlinksRequired } = buildNodeModulesTree(
-        otherPnpApi,
-        {
-          pnpifyFs: false,
-          validateExternalSoftLinks: true,
-          hoistingLimitsByCwd,
-          project: this.opts.project,
-          selfReferencesByCwd,
-        },
-      );
-      if (!tree) {
-        for (const { messageName, text } of errors)
-          this.opts.report.reportError(messageName, text);
-
-        return undefined;
-      }
-      const locatorMap = buildLocatorMap(tree);
-      const locationTree = buildLocationTree(locatorMap, {
-        skipPrefix: unpluggedPath,
-      });
-      // const binSymlinks = await createBinSymlinkMap(
-      //   locatorMap,
-      //   locationTree,
-      //   unpluggedPath,
-      //   {
-      //     loadManifest: async (locatorKey) => {
-      //       const locator = structUtils.parseLocator(locatorKey);
-      //       if (locator.reference === 'root' && locator.name === 'root') {
-      //         return rootSlot.customPackageData.manifest
-      //       }
-      //       const slot = this.localStore.get(locator.locatorHash);
-      //       if (typeof slot === `undefined`)
-      //         throw new Error(`Assertion failed: Expected the slot to exist`);
-
-      //       return slot.customPackageData.manifest;
-      //     },
-      //   },
-      // );
-      const fuseTree = buildFuseTree(locationTree, new Map());
-      Object.assign(installFuseTree.roots, fuseTree.roots);
-      console.log(Date.now() - started);
-    }
+    //   //       return slot.customPackageData.manifest;
+    //   //     },
+    //   //   },
+    //   // );
+    //   const fuseTree = buildFuseTree(locationTree, new Map());
+    //   Object.assign(installFuseTree.roots, fuseTree.roots);
+    //   console.log(Date.now() - started);
+    // }
 
     await this.asyncActions.wait();
     const pnpUnpluggedFolder = this.opts.project.configuration.get(`pnpUnpluggedFolder2`);
@@ -991,7 +996,34 @@ class FuseInstaller implements Installer {
       }
     }
 
-    await runFuse(installStatePath)
+    const fuseStatePath = ppath.join(
+      this.opts.project.cwd,
+      `.yarn/fuse-state.json`,
+    );
+
+    const installStatePath = ppath.join(
+      this.opts.project.cwd,
+      `.yarn/install-state.json`,
+    );
+    // console.log(locatorMap);
+
+    // console.log(inspect(locationTree, { depth: 10 }));
+    const fuseState = buildFuseTree(locationTree, binSymlinks);
+    // console.log(tree)
+    await xfs.changeFilePromise(
+      fuseStatePath,
+      JSON.stringify(fuseState),
+      {},
+    );
+
+    await xfs.changeFilePromise(
+      installStatePath,
+      JSON.stringify(makeInstallState(locatorMap)),
+      {},
+    );
+
+    await runFuse(fuseStatePath)
+    
 
     return {
       customData: this.customData,
@@ -999,17 +1031,87 @@ class FuseInstaller implements Installer {
     };
   }
 }
+async function findInstallState(project: Project, {unrollAliases = false}: {unrollAliases?: boolean} = {}): Promise<InstallState | null> {
+  const installStatePath = ppath.join(
+    project.cwd,
+    `.yarn/install-state.json`,
+  )
+  const json: InstallStateJson = await xfs.readJsonPromise(installStatePath).catch(() => null); 
+  if (!json) {
+    return null;
+  }
+  const installState: InstallState = {
+    locatorMap: new Map()
+  }
+  for (const [locatorKey, locations] of Object.entries(json.locatorMap)) {
+    installState.locatorMap.set(locatorKey, {locations});
+  }
+  return installState
+}
 class FuseLinker implements Linker {
+  private installStateCache: Map<string, Promise<InstallState | null>> = new Map();
+
   supportsPackage(pkg: Package, opts: MinimalLinkOptions): boolean {
     return this.isEnabled(opts);
   }
   async findPackageLocation(locator: Locator, opts: LinkOptions) {
-    // console.error(locator);
+    if (!this.isEnabled(opts))
+      throw new Error(`Assertion failed: Expected the node-modules linker to be enabled`);
+
+    const workspace = opts.project.tryWorkspaceByLocator(locator);
+    if (workspace)
+      return workspace.cwd;
+
+    const installState = await miscUtils.getFactoryWithDefault(this.installStateCache, opts.project.cwd, async () => {
+      return await findInstallState(opts.project, {unrollAliases: true});
+    });
+
+    if (installState === null)
+      throw new UsageError(`Couldn't find the node_modules state file - running an install might help (findPackageLocation)`);
+
+    const locatorInfo = installState.locatorMap.get(structUtils.stringifyLocator(locator));
+    if (!locatorInfo) {
+      const err = new UsageError(`Couldn't find ${structUtils.prettyLocator(opts.project.configuration, locator)} in the currently installed node_modules map - running an install might help`);
+      (err as any).code = `LOCATOR_NOT_INSTALLED`;
+      throw err;
+    }
+
+    // Sort locations from shallowest to deepest in terms of directory nesting
+    const sortedLocations = locatorInfo.locations.sort((loc1, loc2) => loc1.split(ppath.sep).length - loc2.split(ppath.sep).length);
+    // Find the location with shallowest directory nesting that starts inside node_modules of cwd
+    const startingCwdModules = ppath.join(opts.project.configuration.startingCwd, NODE_MODULES);
+    return sortedLocations.find(location => ppath.contains(startingCwdModules, location)) || locatorInfo.locations[0];
   }
 
   async findPackageLocator(location: PortablePath, opts: LinkOptions) {
-    // console.error(locator);
+    if (!this.isEnabled(opts))
+      return null;
+
+    const installState = await miscUtils.getFactoryWithDefault(this.installStateCache, opts.project.cwd, async () => {
+      return await findInstallState(opts.project, {unrollAliases: true});
+    });
+
+    if (installState === null)
+      return null;
+
+    const {locationRoot, segments} = parseLocation(ppath.resolve(location), {skipPrefix: opts.project.cwd});
+
+    let locationNode = installState.locationTree.get(locationRoot);
+    if (!locationNode)
+      return null;
+
+    let locator = locationNode.locator!;
+    for (const segment of segments) {
+      locationNode = locationNode.children.get(segment);
+      if (!locationNode)
+        break;
+      locator = locationNode.locator || locator;
+    }
+
+    return structUtils.parseLocator(locator);
   }
+
+
   getCustomDataKey(): string {
     return JSON.stringify({
       name: `Fuse`,
