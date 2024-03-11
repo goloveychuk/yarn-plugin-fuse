@@ -338,13 +338,11 @@ func main() {
 		}
 		opts := &fs.Options{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}
 
-		timeout := 10 * time.Minute
-		// timeout2 := 10 * time.Second
-		attrTimeout := 10 * time.Minute
-		opts.AttrTimeout = &attrTimeout
+		timeout := time.Second
+		opts.AttrTimeout = &timeout
+		opts.NegativeTimeout = &timeout
 		opts.EntryTimeout = &timeout
 		opts.DirectMount = true
-		// opts.NegativeTimeout = &timeout2
 
 		// opts.MaxBackground = 30
 		opts.Debug = *debug

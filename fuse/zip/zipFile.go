@@ -9,7 +9,7 @@ import (
 )
 
 type zipFile struct {
-	mutableNode
+	fs.Inode
 	fileData *zipFileData
 }
 

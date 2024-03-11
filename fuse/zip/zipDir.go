@@ -13,7 +13,8 @@ import (
 var last_gen = uint64(0)
 
 type ZipDir struct {
-	mutableNode
+	// mutableNode
+	fs.Inode
 	root *ZipRoot
 	path string
 }
