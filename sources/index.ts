@@ -50,7 +50,6 @@ import { PnpApi, PackageInformation } from '@yarnpkg/pnp';
 import { FuseData, FuseNode } from './types';
 import {runFuse} from './runFuse'
 
-runFuse()
 const NODE_MODULES = `node_modules` as Filename;
 
 function getUnpluggedPath(
@@ -991,6 +990,8 @@ class FuseInstaller implements Installer {
         }
       }
     }
+
+    await runFuse(installStatePath)
 
     return {
       customData: this.customData,

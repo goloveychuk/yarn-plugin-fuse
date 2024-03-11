@@ -54,6 +54,20 @@ type dependencyRoot struct {
 	inoGen    inoGen
 }
 
+type dependencyRootNode struct {
+	close chan os.Signal
+	dependencyNode
+}
+
+func (this *dependencyRootNode) Unlink(ctx context.Context, name string) syscall.Errno {
+	go func() {
+		this.close <- syscall.SIGTERM
+	}()
+	return fs.OK
+}
+
+var _ = (fs.NodeUnlinker)((*dependencyRootNode)(nil))
+
 type dependencyNode struct {
 	dependencyRoot
 	fs.Inode
@@ -284,6 +298,19 @@ func runGCInterval(interval time.Duration) {
 	}()
 }
 
+type ApiServer struct {
+}
+
+func (this *ApiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	d := Data{Pid: os.Getpid()}
+	data, err := json.Marshal(d)
+	if err != nil {
+		log.Fatalf("json.Marshal: %v", err)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data)
+}
+
 func main() {
 
 	debug := flag.Bool("debug", false, "print debug data")
@@ -312,19 +339,19 @@ func main() {
 	if err := json.Unmarshal(data, fuseData); err != nil {
 		log.Fatal(err)
 	}
+	close := make(chan os.Signal, 10)
+
 	fuseData.init()
 	// fmt.Println(fuseData.Roots)
-	servers := make([]*fuse.Server, 0)
+	servers := make(map[string]*fuse.Server, 0)
 
 	toMount := make([]ToMount, 0)
 	for mount, root := range fuseData.Roots {
-		node := &dependencyNode{dependencyRoot: root}
-
+		node := &dependencyRootNode{close: close, dependencyNode: dependencyNode{dependencyRoot: root}}
 		toMount = append(toMount, ToMount{mount, node})
 	}
-	// loopback, err := fs.NewLoopbackRoot("/Users/vadymh/work/thunderbolt2/.yarn/unplugged2/@wix-ambassador-app-settings-service-virtual-56a26c1bac/node_modules/@wix/ambassador-app-settings-service")
-	// toMount = append(toMount, ToMount{"/Users/vadymh/work/thunderbolt2/test", loopback})
-	close := make(chan os.Signal, 10)
+	// controlPath := configPath + ".control"
+	// toMount = append(toMount, ToMount{controlPath, &ControlWrap{}})
 	ZIP_GETTER = zip.CreateZipGetter()
 	for _, mount := range toMount {
 		println("Mounting", mount.path)
@@ -346,7 +373,7 @@ func main() {
 
 		// opts.MaxBackground = 30
 		opts.Debug = *debug
-		opts.Options = []string{"vm.vfs_cache_pressure=10"}
+		opts.Options = []string{"vm.vfs_cache_pressure=10", "auto_unmount"}
 
 		if err != nil {
 			log.Fatalf("Unmarshal fail: %v\n", err)
@@ -357,7 +384,7 @@ func main() {
 			log.Fatalf("Mount fail: %v\n", err)
 		}
 		println("Mounted!", mount.path)
-		servers = append(servers, server)
+		servers[mount.path] = server
 
 		// go func() {
 		// 	err := server.WaitMount()
@@ -368,13 +395,31 @@ func main() {
 		// 	close <- syscall.SIGTERM
 		// }()
 	}
+	// handler := &ApiServer{}
+	// listener, err2 := net.Listen("unix", controlPath)
+	// if err2 != nil {
+	// 	log.Fatal(err2)
+	// }
+	// go http.Serve(listener, handler)
 
 	cleanup := func() {
-		for _, server := range servers {
-			println("unmounting\n", server)
-			server.Unmount()
-		}
+		<-time.After(10 * time.Second)
+		// listener.Close()
+		for name, server := range servers {
+			println("unmounting\n", name)
+			err := server.Unmount()
+			if err != nil {
+				fmt.Println("unmounting err 1", err)
+			}
+			// <-time.After(1 * time.Second)
+			// cmd := exec.Command("umount", name)
+			// err = cmd.Run()
+			// if err != nil {
+			// 	fmt.Println("unmounting err 2", err)
+			// }
 
+		}
+		fmt.Println("Finished cleanup")
 		os.Exit(1)
 	}
 
