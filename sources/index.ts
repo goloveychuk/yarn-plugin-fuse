@@ -845,7 +845,7 @@ class FuseInstaller implements Installer {
       if (!buildRequest) continue;
 
       installStatuses.push({
-        buildLocations: installRecord.locations,
+        buildLocations: installRecord.locations.slice(0, 1), ///!!!!!!!!!!
         locator,
         buildRequest,
       });
