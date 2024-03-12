@@ -1,5 +1,8 @@
 {
   "packageManager": "yarn@4.1.0",
+  "scripts": {
+    "test": "cd package && node test.js"
+  },
   "workspaces": {
     "packages": [
       "package",
