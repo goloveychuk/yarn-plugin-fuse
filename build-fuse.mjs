@@ -23,7 +23,7 @@ function getUrl() {
   return `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/releases/download/${tag}/`
 }
 
-let PREFIX = getUrl()
+let PREFIX = undefined
 
 
 const projectDir = path.join(process.cwd(), 'fuse');
