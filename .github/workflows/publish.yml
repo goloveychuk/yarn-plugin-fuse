@@ -20,10 +20,11 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
 
+      - name: Install
+        run: yarn install --immutable-cache 
+        
       - name: Build project
-        run: |
-          yarn install --immutable-cache --check-cache && \
-          yarn build
+        run: yarn build
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v2
