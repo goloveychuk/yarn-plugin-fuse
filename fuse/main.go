@@ -343,7 +343,7 @@ func main() {
 	fuseData := &FuseData{}
 
 	if err := json.Unmarshal(data, fuseData); err != nil {
-		log.Fatal(err)
+		log.Fatal("Unmarshal error", err)
 	}
 	close := make(chan os.Signal, 10)
 
@@ -360,14 +360,16 @@ func main() {
 	// toMount = append(toMount, ToMount{controlPath, &ControlWrap{}})
 	ZIP_GETTER = zip.CreateZipGetter()
 	for _, mount := range toMount {
-		println("Mounting", mount.path)
+		fmt.Println("Mounting", mount.path)
 		if isExists(mount.path) {
-			println("Unmounting", mount.path)
+			fmt.Println("Unmounting", mount.path)
 			cmd := exec.Command("umount", mount.path)
 			err := cmd.Run()
 			if err != nil {
-				// log.Fatal(err)
+				fmt.Println("unmounting err", err)
 			}
+		} else {
+			os.Mkdir(mount.path, 0755)
 		}
 		opts := &fs.Options{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}
 
@@ -379,17 +381,15 @@ func main() {
 
 		// opts.MaxBackground = 30
 		opts.Debug = *debug
-		opts.Options = []string{"vm.vfs_cache_pressure=10", "auto_unmount"}
-
-		if err != nil {
-			log.Fatalf("Unmarshal fail: %v\n", err)
+		opts.Options = []string{
+			// "vm.vfs_cache_pressure=10", //incorrect
 		}
 
 		server, err := fs.Mount(mount.path, mount.root, opts)
 		if err != nil {
 			log.Fatalf("Mount fail: %v\n", err)
 		}
-		println("Mounted!", mount.path)
+		fmt.Println("Mounted!", mount.path)
 		servers[mount.path] = server
 
 		// go func() {
@@ -413,7 +413,7 @@ func main() {
 		<-time.After(1 * time.Second)
 		// listener.Close()
 		for name, server := range servers {
-			println("unmounting\n", name)
+			fmt.Println("unmounting\n", name)
 			err := server.Unmount()
 			if err != nil {
 				fmt.Println("unmounting err 1", err)

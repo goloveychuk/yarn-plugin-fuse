@@ -5,7 +5,7 @@ import * as crypto from 'crypto';
 import { getArchAndPlatform } from './utils.mjs';
 import {pathToFileURL, resolve} from 'url'
 
-const dev = process.argv.includes('--dev');
+const dev = process.env.DEVELOPMENT === 'true';
 
 let targets = [
   ['darwin', 'amd64'],
@@ -14,20 +14,23 @@ let targets = [
   ['linux', 'amd64'],
   ['linux', 'arm64'],
 ];
-function getUrl() {
+function getReleaseUrl() {
   const tagName = process.env.GITHUB_REF;
+  if (!tagName) {
+    return undefined
+  }
   const tag = tagName.replace("refs/tags/", "");
   return `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/releases/download/${tag}/`
 }
-
-let PREFIX = getUrl()
 
 
 const projectDir = path.join(process.cwd(), 'fuse');
 const outputDir = path.join(projectDir, 'output');
 
 
-if (dev) {
+let PREFIX = getReleaseUrl();
+
+if (!PREFIX || dev) {
     PREFIX = pathToFileURL(outputDir).href + '/'
 }
 
