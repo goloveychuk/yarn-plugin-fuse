@@ -377,7 +377,7 @@ func main() {
 		opts.AttrTimeout = &timeout
 		opts.NegativeTimeout = &timeout
 		opts.EntryTimeout = &timeout
-		opts.DirectMount = true
+		opts.DirectMountStrict = true
 
 		// opts.MaxBackground = 30
 		opts.Debug = *debug
