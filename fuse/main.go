@@ -362,12 +362,14 @@ func main() {
 	for _, mount := range toMount {
 		println("Mounting", mount.path)
 		if isExists(mount.path) {
-			println("Unmounting", mount.path)
+			fmt.Println("Unmounting", mount.path)
 			cmd := exec.Command("umount", mount.path)
 			err := cmd.Run()
 			if err != nil {
-				// log.Fatal(err)
+				fmt.Println("unmounting err", err)
 			}
+		} else {
+			os.Mkdir(mount.path, 0755)
 		}
 		opts := &fs.Options{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}
 
@@ -379,7 +381,10 @@ func main() {
 
 		// opts.MaxBackground = 30
 		opts.Debug = *debug
-		opts.Options = []string{"vm.vfs_cache_pressure=10", "auto_unmount"}
+		opts.Options = []string{
+			// "vm.vfs_cache_pressure=10",
+			"auto_unmount",
+		}
 
 		if err != nil {
 			log.Fatalf("Unmarshal fail: %v\n", err)
