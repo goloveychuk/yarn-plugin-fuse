@@ -1,7 +1,7 @@
 {
   "packageManager": "yarn@4.1.0",
   "scripts": {
-    "test": "cd package && node test.js"
+    "test": "yarn workspaces foreach --all --parallel --topological-dev --interlaced --verbose run test"
   },
   "workspaces": {
     "packages": [
