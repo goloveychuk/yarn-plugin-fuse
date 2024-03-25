@@ -62,6 +62,7 @@ async function downloadFileOrCache(url: string, key: string): Promise<string> {
   }
   const newPath = await downloadFile(url);
   await fs.rename(newPath, resultPath);
+  return resultPath
 }
 
 export async function runFuse(nmPath: PortablePath, confPath: string) {
