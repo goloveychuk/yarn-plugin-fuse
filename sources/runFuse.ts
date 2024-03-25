@@ -89,7 +89,7 @@ export async function runFuse(nmPath: PortablePath, confPath: string) {
     stdio: 'inherit',
   });
   child.unref();
-
+  console.log("PID", child.pid)
   await waitToMount(nmPath);
 
   // await api.waitToInit();

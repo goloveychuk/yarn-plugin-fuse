@@ -12,12 +12,14 @@ import (
 	"flag"
 	"fmt"
 	"goloveychuk/yarn-fuse/zip"
+	"hash/fnv"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"runtime"
 	"strings"
 	"sync"
@@ -327,11 +329,17 @@ type layoutFsOpts struct {
 func mountLayoutFs(opts layoutFsOpts) {
 	args := []string{"sudo", "mount", "-t", "overlay", "-o", "lowerdir=" + opts.lower + ",upperdir=" + opts.upper + ",workdir=" + opts.work, "overlay", opts.mount}
 	fmt.Println(args)
-	// cmd := exec.Command(args[0], args[1:]...)
-	// err := cmd.Run()
-	// if err != nil {
-	// 	log.Fatalf("mount overlay: %v", err)
-	// }
+	cmd := exec.Command(args[0], args[1:]...)
+	err := cmd.Run()
+	if err != nil {
+		log.Fatalf("mount overlay: %v", err)
+	}
+}
+
+func hashString(str string) string {
+	h := fnv.New128a()
+	h.Write([]byte(str))
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func main() {
@@ -378,15 +386,16 @@ func main() {
 	ZIP_GETTER = zip.CreateZipGetter()
 	for _, mount := range toMount {
 		fmt.Println("Mounting", mount.path)
-		if isExists(mount.path) {
-			fmt.Println("Unmounting", mount.path)
-			cmd := exec.Command("umount", mount.path)
+		fuseMountDir := path.Join(os.TempDir(), hashString(mount.path+"/fuse"))
+		if isExists(fuseMountDir) {
+			fmt.Println("Unmounting", fuseMountDir)
+			cmd := exec.Command("umount", fuseMountDir)
 			err := cmd.Run()
 			if err != nil {
 				fmt.Println("unmounting err", err)
 			}
 		} else {
-			os.Mkdir(mount.path, 0755)
+			os.Mkdir(fuseMountDir, 0755)
 		}
 		opts := &fs.Options{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}
 
@@ -404,16 +413,16 @@ func main() {
 			// "vm.vfs_cache_pressure=10", //incorrect
 		}
 
-		server, err := fs.Mount(mount.path, mount.root, opts)
+		server, err := fs.Mount(fuseMountDir, mount.root, opts)
 		if err != nil {
 			log.Fatalf("Mount fail: %v\n", err)
 		}
 		fmt.Println("Mounted fuse!", mount.path)
-		workdir := mount.path + ".workdir"
-		upper := mount.path + ".upper"
-		os.Mkdir(workdir, 0755)
-		os.Mkdir(upper, 0755)
-		mountLayoutFs(layoutFsOpts{lower: mount.path, upper: upper, work: workdir, mount: mount.path})
+		workdir := path.Join(os.TempDir(), hashString(mount.path+"/work"))
+		upper := path.Join(os.TempDir(), hashString(mount.path+"/upper"))
+		os.Mkdir(workdir, 0700)
+		os.Mkdir(upper, 0700)
+		mountLayoutFs(layoutFsOpts{lower: fuseMountDir, upper: upper, work: workdir, mount: mount.path})
 		fmt.Println("Mounted overlay!", mount.path)
 
 		servers[mount.path] = server
