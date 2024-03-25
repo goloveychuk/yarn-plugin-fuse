@@ -301,7 +301,7 @@ func runGCInterval(interval time.Duration) {
 			runtime.GC()
 			var m runtime.MemStats
 			runtime.ReadMemStats(&m)
-			fmt.Printf("Alloc = %v MiB\n", m.Alloc/1024/1024)
+			// fmt.Printf("Alloc = %v MiB\n", m.Alloc/1024/1024)
 		}
 	}()
 }
@@ -327,7 +327,7 @@ type layoutFsOpts struct {
 }
 
 func mountLayoutFs(opts layoutFsOpts) {
-	args := []string{"mount", "-t", "overlay", "-o", "lowerdir=" + opts.lower + ",upperdir=" + opts.upper + ",workdir=" + opts.work, "overlay", opts.mount}
+	args := []string{"mount", "-t", "overlay", "-o", "index=off,metacopy=off,lowerdir=" + opts.lower + ",upperdir=" + opts.upper + ",workdir=" + opts.work, "overlay", opts.mount}
 	fmt.Println(args)
 	cmd := exec.Command(args[0], args[1:]...)
 	out, err := cmd.CombinedOutput()
@@ -381,7 +381,27 @@ func main() {
 
 	fuseData.init()
 	// fmt.Println(fuseData.Roots)
-	servers := make(map[string]*fuse.Server, 0)
+	cleans := make([]func(), 0)
+	addClean := func(f func()) {
+		// cleans = append([]func(){f}, cleans...)
+		cleans = append(cleans, f)
+	}
+	cleanup := func() {
+		<-time.After(1 * time.Second)
+		// listener.Close()
+		wg := sync.WaitGroup{}
+		for _, _clean := range cleans {
+			wg.Add(1)
+			go func(cl func()) {
+				defer wg.Done()
+				cl()
+			}(_clean)
+		}
+		wg.Wait()
+		fmt.Println("Finished cleanup")
+		os.Exit(1)
+	}
+	defer cleanup()
 
 	toMount := make([]ToMount, 0)
 	for mount, root := range fuseData.Roots {
@@ -393,7 +413,8 @@ func main() {
 	ZIP_GETTER = zip.CreateZipGetter()
 	for _, mount := range toMount {
 		fmt.Println("Mounting", mount.path)
-		fuseMountDir := path.Join(os.TempDir(), hashString(mount.path+"/fuse"))
+		mountPath := mount.path
+		fuseMountDir := path.Join(os.TempDir(), hashString(mountPath+"/fuse"))
 		if isExists(fuseMountDir) {
 			fmt.Println("Unmounting", fuseMountDir)
 			cmd := exec.Command("umount", fuseMountDir)
@@ -426,28 +447,33 @@ func main() {
 		if err != nil {
 			log.Fatalf("Mount fail: %v\n", err)
 		}
-		fmt.Println("Mounted fuse!", mount.path)
-		workdir := path.Join(os.TempDir(), hashString(mount.path+"/work"))
-		upper := path.Join(os.TempDir(), hashString(mount.path+"/upper"))
+		addClean(func() {
+			fmt.Println("Unmounting fuse", fuseMountDir)
+			err := server.Unmount()
+			if err != nil {
+				fmt.Println("unmounting fuse err", err)
+			}
+		})
+		fmt.Println("Mounted fuse!", mountPath)
+		workdir := path.Join(os.TempDir(), hashString(mountPath+"/work"))
+		upper := path.Join(os.TempDir(), hashString(mountPath+"/upper"))
 		os.Mkdir(workdir, 0755) // 0700?
 		os.Chown(workdir, uid, gid)
 		os.Mkdir(upper, 0755)
 		os.Chown(upper, uid, gid)
-		os.Mkdir(mount.path, 0755)
-		os.Chown(mount.path, uid, gid)
-		mountLayoutFs(layoutFsOpts{lower: fuseMountDir, upper: upper, work: workdir, mount: mount.path})
-		fmt.Println("Mounted overlay!", mount.path)
+		os.Mkdir(mountPath, 0755)
+		os.Chown(mountPath, uid, gid)
+		mountLayoutFs(layoutFsOpts{lower: fuseMountDir, upper: upper, work: workdir, mount: mountPath})
+		fmt.Println("Mounted overlay!", mountPath)
+		addClean(func() {
+			fmt.Println("Unmounting overlay", mountPath)
+			cmd := exec.Command("umount", mountPath)
+			err := cmd.Run()
+			if err != nil {
+				fmt.Println("unmounting overlay err", err)
+			}
+		})
 
-		servers[mount.path] = server
-
-		// go func() {
-		// 	err := server.WaitMount()
-		// 	if err != nil {
-		// 		log.Println(err)
-		// 	}
-		// 	println("here", mount.path, err)
-		// 	close <- syscall.SIGTERM
-		// }()
 	}
 	// handler := &ApiServer{}
 	// listener, err2 := net.Listen("unix", controlPath)
@@ -455,33 +481,6 @@ func main() {
 	// 	log.Fatal(err2)
 	// }
 	// go http.Serve(listener, handler)
-
-	cleanup := func() {
-
-		<-time.After(1 * time.Second)
-		// listener.Close()
-		for name, server := range servers {
-			fmt.Println("unmounting\n", name)
-			cmd := exec.Command("umount", name)
-			err := cmd.Run()
-			if err != nil {
-				fmt.Println("umount err", err)
-			}
-			err = server.Unmount()
-			if err != nil {
-				fmt.Println("unmounting err 1", err)
-			}
-			// <-time.After(1 * time.Second)
-			// cmd := exec.Command("umount", name)
-			// err = cmd.Run()
-			// if err != nil {
-			// 	fmt.Println("unmounting err 2", err)
-			// }
-
-		}
-		fmt.Println("Finished cleanup")
-		os.Exit(1)
-	}
 
 	go func() {
 		<-close
