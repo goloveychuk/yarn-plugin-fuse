@@ -317,6 +317,23 @@ func (this *ApiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+type layoutFsOpts struct {
+	lower string
+	upper string
+	work  string
+	mount string
+}
+
+func mountLayoutFs(opts layoutFsOpts) {
+	args := []string{"sudo", "mount", "-t", "overlay", "-o", "lowerdir=" + opts.lower + ",upperdir=" + opts.upper + ",workdir=" + opts.work, "overlay", opts.mount}
+	fmt.Println(args)
+	// cmd := exec.Command(args[0], args[1:]...)
+	// err := cmd.Run()
+	// if err != nil {
+	// 	log.Fatalf("mount overlay: %v", err)
+	// }
+}
+
 func main() {
 
 	debug := flag.Bool("debug", false, "print debug data")
@@ -378,6 +395,8 @@ func main() {
 		opts.NegativeTimeout = &timeout
 		opts.EntryTimeout = &timeout
 		opts.DirectMount = true
+		opts.AllowOther = true //sudo nano /etc/fuse.conf
+		// opts.DirectMountStrict = true
 
 		// opts.MaxBackground = 30
 		opts.Debug = *debug
@@ -389,7 +408,14 @@ func main() {
 		if err != nil {
 			log.Fatalf("Mount fail: %v\n", err)
 		}
-		fmt.Println("Mounted!", mount.path)
+		fmt.Println("Mounted fuse!", mount.path)
+		workdir := mount.path + ".workdir"
+		upper := mount.path + ".upper"
+		os.Mkdir(workdir, 0755)
+		os.Mkdir(upper, 0755)
+		mountLayoutFs(layoutFsOpts{lower: mount.path, upper: upper, work: workdir, mount: mount.path})
+		fmt.Println("Mounted overlay!", mount.path)
+
 		servers[mount.path] = server
 
 		// go func() {
@@ -414,7 +440,12 @@ func main() {
 		// listener.Close()
 		for name, server := range servers {
 			fmt.Println("unmounting\n", name)
-			err := server.Unmount()
+			cmd := exec.Command("sudo", "umount", name)
+			err := cmd.Run()
+			if err != nil {
+				fmt.Println("umount err", err)
+			}
+			err = server.Unmount()
 			if err != nil {
 				fmt.Println("unmounting err 1", err)
 			}
