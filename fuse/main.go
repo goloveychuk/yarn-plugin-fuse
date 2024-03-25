@@ -330,13 +330,8 @@ func mountLayoutFs(opts layoutFsOpts) {
 	args := []string{"sudo", "mount", "-t", "overlay", "-o", "lowerdir=" + opts.lower + ",upperdir=" + opts.upper + ",workdir=" + opts.work, "overlay", opts.mount}
 	fmt.Println(args)
 	cmd := exec.Command(args[0], args[1:]...)
-	err := cmd.Run()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			log.Fatal(err)
-		}
-
 		log.Fatalf("mount overlay: %v\n%s\n", err, out)
 	}
 }
