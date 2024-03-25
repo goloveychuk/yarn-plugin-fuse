@@ -404,7 +404,7 @@ func main() {
 		opts.NegativeTimeout = &timeout
 		opts.EntryTimeout = &timeout
 		opts.DirectMount = true
-		// opts.AllowOther = true //sudo nano /etc/fuse.conf
+		opts.AllowOther = true //sudo nano /etc/fuse.conf
 		// opts.DirectMountStrict = true
 
 		// opts.MaxBackground = 30
