@@ -338,6 +338,7 @@ func mountLayoutFs(opts layoutFsOpts) {
 
 func hashString(str string) string {
 	h := fnv.New128a()
+	h.Write([]byte("fuse-linker"))
 	h.Write([]byte(str))
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
@@ -421,8 +422,9 @@ func main() {
 		fmt.Println("Mounted fuse!", mount.path)
 		workdir := path.Join(os.TempDir(), hashString(mount.path+"/work"))
 		upper := path.Join(os.TempDir(), hashString(mount.path+"/upper"))
-		os.Mkdir(workdir, 0700)
-		os.Mkdir(upper, 0700)
+		os.Mkdir(workdir, 0755) // 0700?
+		os.Mkdir(upper, 0755)
+		os.Mkdir(mount.path, 0755)
 		mountLayoutFs(layoutFsOpts{lower: fuseMountDir, upper: upper, work: workdir, mount: mount.path})
 		fmt.Println("Mounted overlay!", mount.path)
 
