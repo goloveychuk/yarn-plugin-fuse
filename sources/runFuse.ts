@@ -1,5 +1,5 @@
 import * as path from 'path';
-import * as fs from 'fs';
+import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
 import { spawn } from 'child_process';
 import { pipeline } from 'stream/promises';
@@ -9,12 +9,11 @@ import { getExecFileName } from '../utils.mjs';
 import metadata from '../fuse/output/metadata.json';
 import { fileURLToPath } from 'url';
 import * as os from 'os';
-import * as https from 'https';
 
 async function checkChecksum(p: string, checksum: string) {
   const hash = crypto.createHash('sha512');
-  const stream = fs.createReadStream(p);
-  await pipeline(stream, hash);
+  const stream = await fs.open(p, 'r');
+  await pipeline(stream.createReadStream(), hash);
   const hashRes = hash.digest('hex');
   if (hashRes !== checksum) {
     throw new Error(`Checksum mismatch for ${p}`);
@@ -42,31 +41,27 @@ async function waitToMount(nmPath: PortablePath) {
   }
 }
 
-function downloadFile(url: string, dest: string) {
+async function downloadFile(url: string) {
   const tmpPath = path.join(os.tmpdir(), crypto.randomUUID());
-  return new Promise<void>((resolve, reject) => {
-    const file = fs.createWriteStream(tmpPath);
-    const req = https.get(url, (res) => {
-      res.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        fs.rename(tmpPath, dest, (err) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve();
-          }
-        });
-      });
-    });
-    req.on('error', (err) => {
-      reject(err);
-    });
-    req.end();
-  });
+  const resp = await fetch(url)
+  if (!resp.ok) {
+    throw new Error(`Failed to download ${url}`);
+  }
+  if (!resp.body) {
+    throw new Error(`No body for ${url}`);
+  }
+  const handle = await fs.open(tmpPath, 'w')
+  await pipeline(resp.body, handle.createWriteStream());
+  return tmpPath;
 }
 
-async function downloadFileOrCache(url: string): Promise<string> {
+async function downloadFileOrCache(url: string, key: string): Promise<string> {
+  const resultPath = path.join(os.tmpdir(), key);
+  if (await (fs.stat(resultPath).catch(() => false))) {
+    return resultPath;
+  }
+  const newPath = await downloadFile(url);
+  await fs.rename(newPath, resultPath);
   throw new Error('Not implemented');
 }
 
@@ -81,7 +76,7 @@ export async function runFuse(nmPath: PortablePath, confPath: string) {
   if (filePath.protocol === 'file:') {
     realFilePath = fileURLToPath(filePath);
   } else {
-    realFilePath = await downloadFileOrCache(filePath.href);
+    realFilePath = await downloadFileOrCache(filePath.href, meta.checksum);
   }
   await checkChecksum(realFilePath, meta.checksum);
   const info = os.userInfo();
