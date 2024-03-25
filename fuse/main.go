@@ -327,7 +327,7 @@ type layoutFsOpts struct {
 }
 
 func mountLayoutFs(opts layoutFsOpts) {
-	args := []string{"sudo", "mount", "-t", "overlay", "-o", "lowerdir=" + opts.lower + ",upperdir=" + opts.upper + ",workdir=" + opts.work, "overlay", opts.mount}
+	args := []string{"mount", "-t", "overlay", "-o", "lowerdir=" + opts.lower + ",upperdir=" + opts.upper + ",workdir=" + opts.work, "overlay", opts.mount}
 	fmt.Println(args)
 	cmd := exec.Command(args[0], args[1:]...)
 	out, err := cmd.CombinedOutput()
@@ -404,7 +404,7 @@ func main() {
 		opts.AttrTimeout = &timeout
 		opts.NegativeTimeout = &timeout
 		opts.EntryTimeout = &timeout
-		opts.DirectMount = true
+		opts.DirectMountStrict = true
 		// opts.AllowOther = true //sudo nano /etc/fuse.conf
 		// opts.DirectMountStrict = true
 
@@ -452,7 +452,7 @@ func main() {
 		// listener.Close()
 		for name, server := range servers {
 			fmt.Println("unmounting\n", name)
-			cmd := exec.Command("sudo", "umount", name)
+			cmd := exec.Command("umount", name)
 			err := cmd.Run()
 			if err != nil {
 				fmt.Println("umount err", err)

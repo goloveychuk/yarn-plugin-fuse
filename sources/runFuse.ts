@@ -84,7 +84,7 @@ export async function runFuse(nmPath: PortablePath, confPath: string) {
     realFilePath = await downloadFileOrCache(filePath.href);
   }
   await checkChecksum(realFilePath, meta.checksum);
-  const child = spawn(realFilePath, [confPath], {
+  const child = spawn('sudo', [realFilePath, confPath], {
     detached: true,
     stdio: 'inherit',
   });
