@@ -62,7 +62,6 @@ async function downloadFileOrCache(url: string, key: string): Promise<string> {
   }
   const newPath = await downloadFile(url);
   await fs.rename(newPath, resultPath);
-  throw new Error('Not implemented');
 }
 
 export async function runFuse(nmPath: PortablePath, confPath: string) {
