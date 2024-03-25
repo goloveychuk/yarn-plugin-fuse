@@ -410,7 +410,7 @@ func main() {
 		// opts.MaxBackground = 30
 		opts.Debug = *debug
 		opts.Options = []string{
-			"allow_root",
+			// "allow_root",
 			// "vm.vfs_cache_pressure=10", //incorrect
 		}
 
