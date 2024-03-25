@@ -404,12 +404,13 @@ func main() {
 		opts.NegativeTimeout = &timeout
 		opts.EntryTimeout = &timeout
 		opts.DirectMount = true
-		opts.AllowOther = true //sudo nano /etc/fuse.conf
+		// opts.AllowOther = true //sudo nano /etc/fuse.conf
 		// opts.DirectMountStrict = true
 
 		// opts.MaxBackground = 30
 		opts.Debug = *debug
 		opts.Options = []string{
+			"allow_root",
 			// "vm.vfs_cache_pressure=10", //incorrect
 		}
 
