@@ -1,14 +1,14 @@
 name: Publish
 
-# on:
-#   push:
-#     tags:
-#       - 'v*'
 on:
-  workflow_run:
-    workflows: [Run Tests]
-    types:
-      - completed
+  push:
+    tags:
+      - 'v*'
+# on:
+#   workflow_run:
+#     workflows: [Run Tests]
+#     types:
+#       - completed
 
 jobs:
   publish:
