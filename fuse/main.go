@@ -344,13 +344,19 @@ func hashString(str string) string {
 }
 
 func main() {
-
+	fmt.Println(os.Args)
 	debug := flag.Bool("debug", false, "print debug data")
 	prof := flag.Bool("prof", false, "open profile server")
-
+	_uid := flag.Int("uid", -1, "uid")
+	_gid := flag.Int("gid", -1, "gid")
 	flag.Parse()
 	if len(flag.Args()) < 1 {
 		log.Fatal("Usage:\n  hello MOUNTPOINT")
+	}
+	uid := *_uid
+	gid := *_gid
+	if uid == -1 || gid == -1 {
+		log.Fatal("uid and gid are required")
 	}
 	if *prof {
 		defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")). // profile.MemProfile
@@ -397,8 +403,9 @@ func main() {
 			}
 		} else {
 			os.Mkdir(fuseMountDir, 0755)
+			os.Chown(fuseMountDir, uid, gid)
 		}
-		opts := &fs.Options{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}
+		opts := &fs.Options{UID: uint32(uid), GID: uint32(gid)}
 
 		timeout := time.Second
 		opts.AttrTimeout = &timeout
@@ -423,8 +430,11 @@ func main() {
 		workdir := path.Join(os.TempDir(), hashString(mount.path+"/work"))
 		upper := path.Join(os.TempDir(), hashString(mount.path+"/upper"))
 		os.Mkdir(workdir, 0755) // 0700?
+		os.Chown(workdir, uid, gid)
 		os.Mkdir(upper, 0755)
+		os.Chown(upper, uid, gid)
 		os.Mkdir(mount.path, 0755)
+		os.Chown(mount.path, uid, gid)
 		mountLayoutFs(layoutFsOpts{lower: fuseMountDir, upper: upper, work: workdir, mount: mount.path})
 		fmt.Println("Mounted overlay!", mount.path)
 

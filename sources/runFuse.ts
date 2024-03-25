@@ -67,7 +67,7 @@ function downloadFile(url: string, dest: string) {
 }
 
 async function downloadFileOrCache(url: string): Promise<string> {
-    throw new Error('Not implemented');
+  throw new Error('Not implemented');
 }
 
 export async function runFuse(nmPath: PortablePath, confPath: string) {
@@ -84,7 +84,8 @@ export async function runFuse(nmPath: PortablePath, confPath: string) {
     realFilePath = await downloadFileOrCache(filePath.href);
   }
   await checkChecksum(realFilePath, meta.checksum);
-  const child = spawn('sudo', [realFilePath, confPath], {
+  const info = os.userInfo();
+  const child = spawn('sudo', [realFilePath, '-uid', String(info.uid), '-gid', String(info.gid), confPath], {
     detached: true,
     stdio: 'inherit',
   });
