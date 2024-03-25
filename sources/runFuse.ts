@@ -61,6 +61,7 @@ async function downloadFileOrCache(url: string, key: string): Promise<string> {
     return resultPath;
   }
   const newPath = await downloadFile(url);
+  await fs.chmod(newPath, 0o700);
   await fs.rename(newPath, resultPath);
   return resultPath
 }
