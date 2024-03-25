@@ -332,7 +332,12 @@ func mountLayoutFs(opts layoutFsOpts) {
 	cmd := exec.Command(args[0], args[1:]...)
 	err := cmd.Run()
 	if err != nil {
-		log.Fatalf("mount overlay: %v", err)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		log.Fatalf("mount overlay: %v\n%s\n", err, out)
 	}
 }
 
