@@ -1,19 +1,20 @@
-import {structUtils, Report, Manifest, miscUtils, formatUtils}              from '@yarnpkg/core';
-import {Locator, Package, FinalizeInstallStatus, hashUtils}                 from '@yarnpkg/core';
-import {Linker, LinkOptions, MinimalLinkOptions, LinkType, WindowsLinkType} from '@yarnpkg/core';
-import {LocatorHash, Descriptor, DependencyMeta, Configuration}             from '@yarnpkg/core';
-import {MessageName, Project, FetchResult, Installer}                       from '@yarnpkg/core';
-import {PortablePath, npath, ppath, Filename}                               from '@yarnpkg/fslib';
-import {VirtualFS, xfs, FakeFS, NativePath}                                 from '@yarnpkg/fslib';
-import {ZipOpenFS}                                                          from '@yarnpkg/libzip';
-import {buildNodeModulesTree}                                               from '@yarnpkg/nm';
-import {NodeModulesLocatorMap, buildLocatorMap, NodeModulesHoistingLimits}  from '@yarnpkg/nm';
-import {parseSyml}                                                          from '@yarnpkg/parsers';
-import {jsInstallUtils}                                                     from '@yarnpkg/plugin-pnp';
-import {PnpApi, PackageInformation}                                         from '@yarnpkg/pnp';
-import {UsageError}                                                         from 'clipanion';
+import { structUtils, Report, Manifest, miscUtils, formatUtils } from '@yarnpkg/core';
+import { Locator, Package, FinalizeInstallStatus, hashUtils } from '@yarnpkg/core';
+import { Linker, LinkOptions, MinimalLinkOptions, LinkType, WindowsLinkType } from '@yarnpkg/core';
+import { LocatorHash, Descriptor, DependencyMeta, Configuration } from '@yarnpkg/core';
+import { MessageName, Project, FetchResult, Installer } from '@yarnpkg/core';
+import { PortablePath, npath, ppath, Filename } from '@yarnpkg/fslib';
+import { VirtualFS, xfs, FakeFS, NativePath } from '@yarnpkg/fslib';
+import { buildNodeModulesTree } from '@yarnpkg/nm';
+import { NodeModulesLocatorMap, buildLocatorMap, NodeModulesHoistingLimits } from '@yarnpkg/nm';
+import { parseSyml } from '@yarnpkg/parsers';
+import { jsInstallUtils } from '@yarnpkg/plugin-pnp';
+import { PnpApi, PackageInformation } from '@yarnpkg/pnp';
+import { UsageError } from 'clipanion';
 import { runFuse } from './runFuse';
 import { buildFuseTree } from './utils';
+
+const yarn3 = !jsInstallUtils.extractBuildRequest
 
 const STATE_FILE_VERSION = 1;
 const NODE_MODULES = `node_modules` as Filename;
@@ -21,7 +22,7 @@ const DOT_BIN = `.bin` as Filename;
 const INSTALL_STATE_FILE = `.yarn-state.yml` as Filename;
 const MTIME_ACCURANCY = 1000;
 
-type InstallState = {locatorMap: NodeModulesLocatorMap, locationTree: LocationTree, binSymlinks: BinSymlinkMap, nmMode: NodeModulesMode, mtimeMs: number};
+type InstallState = { locatorMap: NodeModulesLocatorMap, locationTree: LocationTree, binSymlinks: BinSymlinkMap, nmMode: NodeModulesMode, mtimeMs: number };
 export type BinSymlinkMap = Map<PortablePath, Map<Filename, PortablePath>>;
 type LoadManifest = (locator: LocatorKey, installLocation: PortablePath) => Promise<Pick<Manifest, 'bin'>>;
 
@@ -54,7 +55,7 @@ export class NodeModulesLinker implements Linker {
       return workspace.cwd;
 
     const installState = await miscUtils.getFactoryWithDefault(this.installStateCache, opts.project.cwd, async () => {
-      return await findInstallState(opts.project, {unrollAliases: true});
+      return await findInstallState(opts.project, { unrollAliases: true });
     });
 
     if (installState === null)
@@ -79,13 +80,13 @@ export class NodeModulesLinker implements Linker {
       return null;
 
     const installState = await miscUtils.getFactoryWithDefault(this.installStateCache, opts.project.cwd, async () => {
-      return await findInstallState(opts.project, {unrollAliases: true});
+      return await findInstallState(opts.project, { unrollAliases: true });
     });
 
     if (installState === null)
       return null;
 
-    const {locationRoot, segments} = parseLocation(ppath.resolve(location), {skipPrefix: opts.project.cwd});
+    const { locationRoot, segments } = parseLocation(ppath.resolve(location), { skipPrefix: opts.project.cwd });
 
     let locationNode = installState.locationTree.get(locationRoot);
     if (!locationNode)
@@ -123,6 +124,13 @@ class NodeModulesInstaller implements Installer {
     pnpNode: PackageInformation<NativePath>;
   }> = new Map();
 
+  getCustomDataKey() { //needed for yarn 3
+    return JSON.stringify({
+      name: `FuseLinker`,
+      version: 3,
+    });
+  }
+
   private realLocatorChecksums: Map<LocatorHash, string | null> = new Map();
 
   constructor(private opts: LinkOptions) {
@@ -152,7 +160,10 @@ class NodeModulesInstaller implements Installer {
 
     // We don't link the package at all if it's for an unsupported platform
     if (!structUtils.isPackageCompatible(pkg, this.opts.project.configuration.getSupportedArchitectures()))
-      return {packageLocation: null, buildRequest: null};
+      return {
+        packageLocation: null, buildRequest: null,
+        buildDirective: null //yarn3
+      };
 
     const packageDependencies = new Map<string, string | [string, string] | null>();
     const packagePeers = new Set<string>();
@@ -195,6 +206,7 @@ class NodeModulesInstaller implements Installer {
     return {
       packageLocation,
       buildRequest: null,
+      buildDirective: null, //yarn3
     };
   }
 
@@ -220,12 +232,7 @@ class NodeModulesInstaller implements Installer {
     if (this.opts.project.configuration.get(`nodeLinker`) !== `fuse`)
       return undefined;
 
-    const defaultFsLayer = new VirtualFS({
-      baseFs: new ZipOpenFS({
-        maxOpenFiles: 80,
-        readOnlyArchives: true,
-      }),
-    });
+
 
     let preinstallState = await findInstallState(this.opts.project);
     const nmModeSetting = this.opts.project.configuration.get(`nmMode`);
@@ -234,7 +241,7 @@ class NodeModulesInstaller implements Installer {
     if (preinstallState === null || nmModeSetting !== preinstallState.nmMode) {
       this.opts.project.storedBuildState.clear();
 
-      preinstallState = {locatorMap: new Map(), binSymlinks: new Map(), locationTree: new Map(), nmMode: nmModeSetting as any, mtimeMs: 0};
+      preinstallState = { locatorMap: new Map(), binSymlinks: new Map(), locationTree: new Map(), nmMode: nmModeSetting as any, mtimeMs: 0 };
     }
 
     const hoistingLimitsByCwd = new Map(this.opts.project.workspaces.map(workspace => {
@@ -264,15 +271,15 @@ class NodeModulesInstaller implements Installer {
       },
       getLocator: (name, referencish) => {
         if (Array.isArray(referencish)) {
-          return {name: referencish[0], reference: referencish[1]};
+          return { name: referencish[0], reference: referencish[1] };
         } else {
-          return {name, reference: referencish};
+          return { name, reference: referencish };
         }
       },
       getDependencyTreeRoots: () => {
         return this.opts.project.workspaces.map(workspace => {
           const anchoredLocator = workspace.anchoredLocator;
-          return {name: structUtils.stringifyIdent(anchoredLocator), reference: anchoredLocator.reference};
+          return { name: structUtils.stringifyIdent(yarn3 ? (workspace as any).locator : anchoredLocator), reference: anchoredLocator.reference };
         });
       },
       getPackageInformation: pnpLocator => {
@@ -290,7 +297,7 @@ class NodeModulesInstaller implements Installer {
         const workspace = this.opts.project.tryWorkspaceByCwd(npath.toPortablePath(location));
         if (workspace !== null) {
           const anchoredLocator = workspace.anchoredLocator;
-          return {name: structUtils.stringifyIdent(anchoredLocator), reference: anchoredLocator.reference};
+          return { name: structUtils.stringifyIdent(anchoredLocator), reference: anchoredLocator.reference };
         }
 
         throw new Error(`Assertion failed: Unimplemented`);
@@ -309,18 +316,17 @@ class NodeModulesInstaller implements Installer {
       },
     };
 
-    const {tree, errors, preserveSymlinksRequired} = buildNodeModulesTree(pnpApi, {pnpifyFs: false, validateExternalSoftLinks: true, hoistingLimitsByCwd, project: this.opts.project, selfReferencesByCwd});
+    const { tree, errors, preserveSymlinksRequired } = buildNodeModulesTree(pnpApi, { pnpifyFs: false, validateExternalSoftLinks: true, hoistingLimitsByCwd, project: this.opts.project, selfReferencesByCwd });
     if (!tree) {
-      for (const {messageName, text} of errors)
+      for (const { messageName, text } of errors)
         this.opts.report.reportError(messageName, text);
 
       return undefined;
     }
     const locatorMap = buildLocatorMap(tree);
-    
+
 
     await persistNodeModules(preinstallState, locatorMap, {
-      baseFs: defaultFsLayer,
       project: this.opts.project,
       report: this.opts.report,
       realLocatorChecksums: this.realLocatorChecksums,
@@ -349,21 +355,29 @@ class NodeModulesInstaller implements Installer {
       // Workspaces are built by the core
       if (this.opts.project.tryWorkspaceByLocator(slot.pkg))
         continue;
+      
+      if (yarn3) {
+        const buildScripts = (jsInstallUtils as any).extractBuildScripts(slot.pkg, slot.customPackageData, slot.dependencyMeta, { configuration: this.opts.project.configuration, report: this.opts.report });
+        if (buildScripts.length === 0)
+          continue;
 
-      const buildRequest = jsInstallUtils.extractBuildRequest(slot.pkg, slot.customPackageData, slot.dependencyMeta, {configuration: this.opts.project.configuration});
-      if (!buildRequest)
-        continue;
+        installStatuses.push({
+          buildLocations: installRecord.locations,
+          //@ts-expect-error
+          locatorHash: locator.locatorHash,
+          buildDirective: buildScripts,
+        });
+      } else {
+        const buildRequest = jsInstallUtils.extractBuildRequest(slot.pkg, slot.customPackageData, slot.dependencyMeta, { configuration: this.opts.project.configuration });
+        if (!buildRequest)
+          continue;
 
-      installStatuses.push({
-        buildLocations: installRecord.locations,
-        locator,
-        buildRequest,
-      });
-      // installStatuses.push({
-      //   buildLocations: installRecord.locations.slice(0, 1),
-      //   locator,
-      //   buildRequest,
-      // });
+        installStatuses.push({
+          buildLocations: installRecord.locations,
+          locator,
+          buildRequest,
+        });
+      }
     }
 
     if (preserveSymlinksRequired)
@@ -381,7 +395,7 @@ type UnboxPromise<T extends Promise<any>> = T extends Promise<infer U> ? U : nev
 type CustomPackageData = UnboxPromise<ReturnType<typeof extractCustomPackageData>>;
 
 async function extractCustomPackageData(pkg: Package, fetchResult: FetchResult) {
-  const manifest = await Manifest.tryFind(fetchResult.prefixPath, {baseFs: fetchResult.packageFs}) ?? new Manifest();
+  const manifest = await Manifest.tryFind(fetchResult.prefixPath, { baseFs: fetchResult.packageFs }) ?? new Manifest();
 
   const preservedScripts = new Set([`preinstall`, `install`, `postinstall`]);
   for (const scriptName of manifest.scripts.keys())
@@ -394,12 +408,13 @@ async function extractCustomPackageData(pkg: Package, fetchResult: FetchResult) 
       scripts: manifest.scripts,
     },
     misc: {
+      extractHint: yarn3 ? jsInstallUtils.getExtractHint(fetchResult): undefined,
       hasBindingGyp: jsInstallUtils.hasBindingGyp(fetchResult),
     },
   };
 }
 
-async function writeInstallState(project: Project, locatorMap: NodeModulesLocatorMap, binSymlinks: BinSymlinkMap, nmMode: {value: NodeModulesMode}, {installChangedByUser}: {installChangedByUser: boolean}) {
+async function writeInstallState(project: Project, locatorMap: NodeModulesLocatorMap, binSymlinks: BinSymlinkMap, nmMode: { value: NodeModulesMode }, { installChangedByUser }: { installChangedByUser: boolean }) {
   let locatorState = ``;
 
   locatorState += `# Warning: This file is automatically generated. Removing it is fine, but will\n`;
@@ -461,7 +476,7 @@ async function writeInstallState(project: Project, locatorMap: NodeModulesLocato
   });
 }
 
-async function findInstallState(project: Project, {unrollAliases = false}: {unrollAliases?: boolean} = {}): Promise<InstallState | null> {
+async function findInstallState(project: Project, { unrollAliases = false }: { unrollAliases?: boolean } = {}): Promise<InstallState | null> {
   const rootPath = project.cwd;
   const installStatePath = ppath.join(rootPath, NODE_MODULES, INSTALL_STATE_FILE);
 
@@ -512,7 +527,7 @@ async function findInstallState(project: Project, {unrollAliases = false}: {unro
 
     if (unrollAliases && installRecord.aliases) {
       for (const reference of installRecord.aliases) {
-        const {scope, name} = structUtils.parseLocator(locatorStr);
+        const { scope, name } = structUtils.parseLocator(locatorStr);
 
         const alias = structUtils.makeLocator(structUtils.makeIdent(scope, name), reference);
         const aliasStr = structUtils.stringifyLocator(alias);
@@ -527,10 +542,10 @@ async function findInstallState(project: Project, {unrollAliases = false}: {unro
     }
   }
 
-  return {locatorMap, binSymlinks, locationTree: buildLocationTree(locatorMap, {skipPrefix: project.cwd}), nmMode, mtimeMs: stats.mtimeMs};
+  return { locatorMap, binSymlinks, locationTree: buildLocationTree(locatorMap, { skipPrefix: project.cwd }), nmMode, mtimeMs: stats.mtimeMs };
 }
 
-const removeDir = async (dir: PortablePath, options: {contentsOnly: boolean, innerLoop?: boolean, allowSymlink?: boolean}): Promise<any> => {
+const removeDir = async (dir: PortablePath, options: { contentsOnly: boolean, innerLoop?: boolean, allowSymlink?: boolean }): Promise<any> => {
   if (dir.split(ppath.sep).indexOf(NODE_MODULES) < 0)
     throw new Error(`Assertion failed: trying to remove dir that doesn't contain node_modules: ${dir}`);
 
@@ -543,12 +558,12 @@ const removeDir = async (dir: PortablePath, options: {contentsOnly: boolean, inn
         return;
       }
     }
-    const entries = await xfs.readdirPromise(dir, {withFileTypes: true});
+    const entries = await xfs.readdirPromise(dir, { withFileTypes: true });
     for (const entry of entries) {
       const targetPath = ppath.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (entry.name !== NODE_MODULES || (options && options.innerLoop)) {
-          await removeDir(targetPath, {innerLoop: true, contentsOnly: false});
+          await removeDir(targetPath, { innerLoop: true, contentsOnly: false });
         }
       } else {
         await xfs.unlinkPromise(targetPath);
@@ -604,7 +619,7 @@ type LocationRoot = PortablePath;
  */
 export type LocationTree = Map<LocationRoot, LocationNode>;
 
-const parseLocation = (location: PortablePath, {skipPrefix}: {skipPrefix: PortablePath}): {locationRoot: PortablePath, segments: Array<Filename>} => {
+const parseLocation = (location: PortablePath, { skipPrefix }: { skipPrefix: PortablePath }): { locationRoot: PortablePath, segments: Array<Filename> } => {
   const projectRelativePath = ppath.contains(skipPrefix, location);
   if (projectRelativePath === null)
     throw new Error(`Assertion failed: Writing attempt prevented to ${location} which is outside project root: ${skipPrefix}`);
@@ -622,10 +637,10 @@ const parseLocation = (location: PortablePath, {skipPrefix}: {skipPrefix: Portab
   // All segments that follow
   const segments = allSegments.slice(nmIndex) as Array<Filename>;
 
-  return {locationRoot, segments};
+  return { locationRoot, segments };
 };
 
-const buildLocationTree = (locatorMap: NodeModulesLocatorMap | null, {skipPrefix}: {skipPrefix: PortablePath}): LocationTree => {
+const buildLocationTree = (locatorMap: NodeModulesLocatorMap | null, { skipPrefix }: { skipPrefix: PortablePath }): LocationTree => {
   const locationTree: LocationTree = new Map();
   if (locatorMap === null)
     return locationTree;
@@ -646,7 +661,7 @@ const buildLocationTree = (locatorMap: NodeModulesLocatorMap | null, {skipPrefix
     }
 
     for (const location of info.locations) {
-      const {locationRoot, segments} = parseLocation(location, {skipPrefix});
+      const { locationRoot, segments } = parseLocation(location, { skipPrefix });
 
       let node = miscUtils.getFactoryWithDefault(locationTree, locationRoot, makeNode);
 
@@ -683,7 +698,7 @@ type DirEntry = {
   digest?: string;
   mtimeMs?: number;
 } | {
-  kind: DirEntryKind. DIRECTORY;
+  kind: DirEntryKind.DIRECTORY;
 } | {
   kind: DirEntryKind.SYMLINK;
   symlinkTo: PortablePath;
@@ -699,9 +714,9 @@ function isLinkLocator(locatorKey: LocatorKey): boolean {
   return descriptor.range.startsWith(`link:`);
 }
 
-async function createBinSymlinkMap(installState: NodeModulesLocatorMap, locationTree: LocationTree, projectRoot: PortablePath, {loadManifest}: {loadManifest: LoadManifest}) {
+async function createBinSymlinkMap(installState: NodeModulesLocatorMap, locationTree: LocationTree, projectRoot: PortablePath, { loadManifest }: { loadManifest: LoadManifest }) {
   const locatorScriptMap = new Map<LocatorKey, Map<string, string>>();
-  for (const [locatorKey, {locations}] of installState) {
+  for (const [locatorKey, { locations }] of installState) {
     const manifest = !isLinkLocator(locatorKey)
       ? await loadManifest(locatorKey, locations[0])
       : null;
@@ -759,16 +774,16 @@ async function createBinSymlinkMap(installState: NodeModulesLocatorMap, location
 }
 
 
-async function persistNodeModules(preinstallState: InstallState, installState: NodeModulesLocatorMap, {baseFs, project, report, loadManifest, realLocatorChecksums}: {project: Project, baseFs: FakeFS<PortablePath>, report: Report, loadManifest: LoadManifest, realLocatorChecksums: Map<LocatorHash, string | null>}) {
+async function persistNodeModules(preinstallState: InstallState, installState: NodeModulesLocatorMap, { project, report, loadManifest, realLocatorChecksums }: { project: Project, report: Report, loadManifest: LoadManifest, realLocatorChecksums: Map<LocatorHash, string | null> }) {
   const rootNmDirPath = ppath.join(project.cwd, NODE_MODULES);
 
-  const locationTree = buildLocationTree(installState, {skipPrefix: project.cwd});
+  const locationTree = buildLocationTree(installState, { skipPrefix: project.cwd });
 
 
-  const binSymlinks = await createBinSymlinkMap(installState, locationTree, project.cwd, {loadManifest});
+  const binSymlinks = await createBinSymlinkMap(installState, locationTree, project.cwd, { loadManifest });
 
   const nmModeSetting = project.configuration.get(`nmMode`) as any;
-  const nmMode = {value: nmModeSetting};
+  const nmMode = { value: nmModeSetting };
 
   const fuseStatePath = ppath.join(
     project.cwd,
@@ -781,9 +796,9 @@ async function persistNodeModules(preinstallState: InstallState, installState: N
 
   const nmPath = ppath.join(project.cwd, NODE_MODULES);
   await runFuse(nmPath, fuseStatePath);
-  
+
   let installChangedByUser = false // ??
-  await writeInstallState(project, installState, binSymlinks, nmMode, {installChangedByUser});
+  await writeInstallState(project, installState, binSymlinks, nmMode, { installChangedByUser });
 }
 
 
