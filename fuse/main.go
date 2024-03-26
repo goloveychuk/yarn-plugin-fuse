@@ -38,7 +38,7 @@ const INO_STEP = uint64(1_000_000_000)
 
 var last_ino = uint64(0)
 
-var inoCache *inoCacheStr
+// var inoCache *inoCacheStr
 
 const UNMOUNT_FILE = ".00unmount"
 
@@ -46,10 +46,11 @@ type inoGen struct {
 	ino uint64
 	gen uint64
 }
-type inoCacheStr struct {
-	m  map[string]inoGen
-	mu sync.Mutex
-}
+
+// type inoCacheStr struct {
+// 	m  map[string]inoGen
+// 	mu sync.Mutex
+// }
 
 type dependencyRoot struct {
 	LinkType  string                     //SOFT HARD
@@ -164,30 +165,36 @@ func getMode(dep *dependencyRoot) uint32 {
 }
 
 func getInoStart(linkType string, target string) inoGen {
-	// breaks find node_modules -type f | wc -l
-	if linkType == "HARD" && target != "" {
-		inoCache.mu.Lock()
-		defer inoCache.mu.Unlock()
-		if ino, ok := inoCache.m[target]; ok {
-			ino.gen++
-			inoCache.m[target] = ino
-			// fmt.Print("cached", target, ino, "\n")
-			return ino
-			// fmt.Print("cached", r.Target, ino, "\n")
-		} else {
-			newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
-			inoGen := inoGen{ino: newInoStart, gen: 1}
-			inoCache.m[target] = inoGen
-			return inoGen
-		}
-	} else {
-		newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
-		return inoGen{ino: newInoStart, gen: 1}
-
-	}
-	// r.inoStart = newInoStart
-	// }
+	newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
+	return inoGen{ino: newInoStart, gen: 1}
 }
+
+// func getInoStart(linkType string, target string) inoGen {
+// 	// breaks find node_modules -type f | wc -l
+// 	if linkType == "HARD" && target != "" {
+// 		inoCache.mu.Lock()
+// 		defer inoCache.mu.Unlock()
+// 		if ino, ok := inoCache.m[target]; ok {
+// 			ino.gen++
+// 			inoCache.m[target] = ino
+// 			// fmt.Print("cached", target, ino, "\n")
+// 			return ino
+// 			// fmt.Print("cached", r.Target, ino, "\n")
+// 		} else {
+// 			newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
+// 			inoGen := inoGen{ino: newInoStart, gen: 1} // gen: 1
+
+// 			inoCache.m[target] = inoGen //does not work when covered with overlayfs
+// 			return inoGen
+// 		}
+// 	} else {
+// 		newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
+// 		return inoGen{ino: newInoStart, gen: 1} // gen: 1
+
+// 	}
+// 	// r.inoStart = newInoStart
+// 	// }
+// }
 
 func (r *dependencyNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	return r.dependencyRoot.GetChild(ctx, &r.Inode, name, out)
@@ -327,9 +334,8 @@ type layoutFsOpts struct {
 }
 
 func mountLayoutFs(opts layoutFsOpts) {
-	args := []string{"mount", "-t", "overlay", "-o", "index=off,metacopy=off,lowerdir=" + opts.lower + ",upperdir=" + opts.upper + ",workdir=" + opts.work, "overlay", opts.mount}
-	fmt.Println(args)
-	cmd := exec.Command(args[0], args[1:]...)
+	cmd := exec.Command("mount", "-t", "overlay", "-o", "xino=off,redirect_dir=off,index=off,metacopy=off,lowerdir="+opts.lower+",upperdir="+opts.upper+",workdir="+opts.work, "overlay", opts.mount)
+	fmt.Println(cmd.String())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Fatalf("mount overlay: %v\n%s\n", err, out)
@@ -338,7 +344,7 @@ func mountLayoutFs(opts layoutFsOpts) {
 
 func hashString(str string) string {
 	h := fnv.New128a()
-	h.Write([]byte("fuse-linker"))
+	h.Write([]byte("fuse-linker11"))
 	h.Write([]byte(str))
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
@@ -370,7 +376,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	inoCache = &inoCacheStr{m: make(map[string]inoGen)}
+	// inoCache = &inoCacheStr{m: make(map[string]inoGen)}
 
 	fuseData := &FuseData{}
 

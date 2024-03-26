@@ -359,6 +359,11 @@ class NodeModulesInstaller implements Installer {
         locator,
         buildRequest,
       });
+      // installStatuses.push({
+      //   buildLocations: installRecord.locations.slice(0, 1),
+      //   locator,
+      //   buildRequest,
+      // });
     }
 
     if (preserveSymlinksRequired)

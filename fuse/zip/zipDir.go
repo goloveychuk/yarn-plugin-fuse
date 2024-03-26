@@ -3,7 +3,6 @@ package zip
 import (
 	"context"
 	"path"
-	"sync/atomic"
 	"syscall"
 
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -36,7 +35,7 @@ func (zr *ZipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 			return nil, syscall.ENOENT
 		}
 		fullPath := path.Join(zr.path, name)
-		newGen := atomic.AddUint64(&last_gen, 1)
+		// newGen := atomic.AddUint64(&last_gen, 1)
 		out.Ino = d.ino
 
 		if d.fileData == nil {
@@ -44,7 +43,7 @@ func (zr *ZipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 			ch := zr.NewInode(ctx, &zipDir, fs.StableAttr{
 				Mode: fuse.S_IFDIR,
 				Ino:  d.ino,
-				Gen:  newGen,
+				// Gen:  newGen,
 			})
 			return ch, 0
 		}
@@ -52,7 +51,7 @@ func (zr *ZipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 		ch := zr.NewInode(ctx, &zipFile{fileData: d.fileData}, fs.StableAttr{
 			Mode: fuse.S_IFREG,
 			Ino:  d.ino,
-			Gen:  newGen,
+			// Gen:  newGen,
 		})
 		return ch, 0
 	}
