@@ -166,7 +166,7 @@ func getMode(dep *dependencyRoot) uint32 {
 
 func getInoStart(linkType string, target string) inoGen {
 	newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
-	return inoGen{ino: newInoStart, gen: 1}
+	return inoGen{ino: newInoStart}
 }
 
 // func getInoStart(linkType string, target string) inoGen {
@@ -344,7 +344,6 @@ func mountLayoutFs(opts layoutFsOpts) {
 
 func hashString(str string) string {
 	h := fnv.New128a()
-	h.Write([]byte("fuse-linker11"))
 	h.Write([]byte(str))
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
@@ -363,6 +362,9 @@ func main() {
 	gid := *_gid
 	if uid == -1 || gid == -1 {
 		log.Fatal("uid and gid are required")
+	}
+	getTempDir := func(p string) string {
+		return path.Join(os.TempDir(), "yarn-fuse-linker-"+string(uid), hashString(p))
 	}
 	if *prof {
 		defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")). // profile.MemProfile
@@ -420,7 +422,7 @@ func main() {
 	for _, mount := range toMount {
 		fmt.Println("Mounting", mount.path)
 		mountPath := mount.path
-		fuseMountDir := path.Join(os.TempDir(), hashString(mountPath+"/fuse"))
+		fuseMountDir := getTempDir(mountPath + "/fuse")
 		if isExists(fuseMountDir) {
 			fmt.Println("Unmounting", fuseMountDir)
 			cmd := exec.Command("umount", fuseMountDir)
@@ -429,7 +431,7 @@ func main() {
 				fmt.Println("unmounting err", err)
 			}
 		} else {
-			os.Mkdir(fuseMountDir, 0755)
+			os.MkdirAll(fuseMountDir, 0755)
 			os.Chown(fuseMountDir, uid, gid)
 		}
 		opts := &fs.Options{UID: uint32(uid), GID: uint32(gid)}
@@ -461,13 +463,13 @@ func main() {
 			}
 		})
 		fmt.Println("Mounted fuse!", mountPath)
-		workdir := path.Join(os.TempDir(), hashString(mountPath+"/work"))
-		upper := path.Join(os.TempDir(), hashString(mountPath+"/upper"))
-		os.Mkdir(workdir, 0755) // 0700?
+		workdir := getTempDir(mountPath + "/work")
+		upper := getTempDir(mountPath + "/upper")
+		os.MkdirAll(workdir, 0755) // 0700?
 		os.Chown(workdir, uid, gid)
-		os.Mkdir(upper, 0755)
+		os.MkdirAll(upper, 0755)
 		os.Chown(upper, uid, gid)
-		os.Mkdir(mountPath, 0755)
+		os.MkdirAll(mountPath, 0755)
 		os.Chown(mountPath, uid, gid)
 		mountLayoutFs(layoutFsOpts{lower: fuseMountDir, upper: upper, work: workdir, mount: mountPath})
 		fmt.Println("Mounted overlay!", mountPath)
@@ -475,7 +477,7 @@ func main() {
 			fmt.Println("Unmounting overlay", mountPath)
 			cmd := exec.Command("umount", mountPath)
 			err := cmd.Run()
-			if err != nil {
+			if err != nil { //todo handle busy
 				fmt.Println("unmounting overlay err", err)
 			}
 		})
