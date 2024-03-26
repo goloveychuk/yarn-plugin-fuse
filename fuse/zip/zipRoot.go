@@ -16,7 +16,7 @@ type ZipRoot struct {
 }
 
 func (this *ZipRoot) GetZip() (*proccessedZip, error) {
-	return this.zipGetter.GetZip(this.zipPath, this.stripPrefix, this.inoStart)
+	return this.zipGetter.GetZip(this.zipPath, this.stripPrefix)
 	// if this.zip == nil {
 	// 	zip, err := this._zipGetter.GetZip(this.zipPath, this.stripPrefix, this.inoStart)
 	// 	if err != nil {

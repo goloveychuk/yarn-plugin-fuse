@@ -36,13 +36,14 @@ func (zr *ZipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 		}
 		fullPath := path.Join(zr.path, name)
 		// newGen := atomic.AddUint64(&last_gen, 1)
-		out.Ino = d.ino
+		ino := zr.root.inoStart + d.index
+		out.Ino = ino
 
 		if d.fileData == nil {
 			zipDir := NewZipDir(zr.root, fullPath)
 			ch := zr.NewInode(ctx, &zipDir, fs.StableAttr{
 				Mode: fuse.S_IFDIR,
-				Ino:  d.ino,
+				Ino:  ino,
 				// Gen:  newGen,
 			})
 			return ch, 0
@@ -50,7 +51,7 @@ func (zr *ZipDir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 		out.Attr = d.fileData.attr
 		ch := zr.NewInode(ctx, &zipFile{fileData: d.fileData}, fs.StableAttr{
 			Mode: fuse.S_IFREG,
-			Ino:  d.ino,
+			Ino:  ino,
 			// Gen:  newGen,
 		})
 		return ch, 0
@@ -78,7 +79,7 @@ func (r *ZipDir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 			lst[ind] = fuse.DirEntry{
 				Mode: mode,
 				Name: name,
-				Ino:  d.ino,
+				Ino:  d.index + r.root.inoStart,
 			}
 			ind += 1
 		}
