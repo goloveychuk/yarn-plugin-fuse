@@ -11,9 +11,7 @@
   },
   "scripts": {
     "build": "node build-fuse.mjs && tsc --noEmit && builder build plugin",
-    "dev": "DEVELOPMENT=true node build-fuse.mjs && builder build plugin --no-minify --source-map",
-    "test": "cd example && yarn plugin import ../bundles/@yarnpkg/plugin-fuse.js && yarn install && yarn test",
-    "test-deployed": "cd example && yarn plugin import $FUSE_PLUGIN_PATH && yarn install && yarn test"
+    "dev": "DEVELOPMENT=true node build-fuse.mjs && builder build plugin --no-minify --source-map"
   },
   "packageManager": "yarn@4.1.0"
 }

@@ -61,7 +61,7 @@ jobs:
         run: corepack enable
 
       - name: Test
-        run: yarn run test-deployed
+        run: bash test.bash
         env:
           FUSE_PLUGIN_PATH: ${{ needs.publish.outputs.url }}/plugin-fuse.js
         

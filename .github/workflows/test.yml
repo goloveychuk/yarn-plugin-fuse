@@ -30,4 +30,4 @@ jobs:
           DEVELOPMENT: 'true'
 
       - name: Test
-        run: yarn test
+        run: bash test.bash
