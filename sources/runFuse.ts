@@ -10,6 +10,7 @@ import metadata from '../fuse/output/metadata.json';
 import { fileURLToPath } from 'url';
 import * as os from 'os';
 
+
 async function checkChecksum(p: string, checksum: string) {
   const hash = crypto.createHash('sha512');
   const stream = await fs.open(p, 'r');
@@ -40,14 +41,14 @@ async function waitToMount(nmPath: PortablePath) {
     }
   }
 }
-type Fetcher = (url: string) => Promise<Buffer>
+
+type Fetcher = (url: string) => Promise<NodeJS.ReadableStream>
 
 async function downloadFile(fetcher: Fetcher, url: string) {
   const tmpPath = path.join(os.tmpdir(), crypto.randomUUID());
-  const buffer = await fetcher(url)
+  const stream = await fetcher(url)
   const handle = await fs.open(tmpPath, 'w', 0o700)
-  // await pipeline(resp.body, handle.createWriteStream());
-  await handle.write(buffer);
+  await pipeline(stream, handle.createWriteStream());
   await handle.close();
   return tmpPath;
 }

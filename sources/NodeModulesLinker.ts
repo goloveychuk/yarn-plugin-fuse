@@ -5,6 +5,7 @@ import { LocatorHash, Descriptor, DependencyMeta, Configuration } from '@yarnpkg
 import { MessageName, Project, FetchResult, Installer, httpUtils } from '@yarnpkg/core';
 import { PortablePath, npath, ppath, Filename } from '@yarnpkg/fslib';
 import { VirtualFS, xfs, FakeFS, NativePath } from '@yarnpkg/fslib';
+import { Readable } from 'stream'
 import { buildNodeModulesTree } from '@yarnpkg/nm';
 import { NodeModulesLocatorMap, buildLocatorMap, NodeModulesHoistingLimits } from '@yarnpkg/nm';
 import { parseSyml } from '@yarnpkg/parsers';
@@ -355,7 +356,7 @@ class NodeModulesInstaller implements Installer {
       // Workspaces are built by the core
       if (this.opts.project.tryWorkspaceByLocator(slot.pkg))
         continue;
-      
+
       if (yarn3) {
         const buildScripts = (jsInstallUtils as any).extractBuildScripts(slot.pkg, slot.customPackageData, slot.dependencyMeta, { configuration: this.opts.project.configuration, report: this.opts.report });
         if (buildScripts.length === 0)
@@ -408,7 +409,7 @@ async function extractCustomPackageData(pkg: Package, fetchResult: FetchResult) 
       scripts: manifest.scripts,
     },
     misc: {
-      extractHint: yarn3 ? jsInstallUtils.getExtractHint(fetchResult): undefined,
+      extractHint: yarn3 ? jsInstallUtils.getExtractHint(fetchResult) : undefined,
       hasBindingGyp: jsInstallUtils.hasBindingGyp(fetchResult),
     },
   };
@@ -794,14 +795,14 @@ async function persistNodeModules(preinstallState: InstallState, installState: N
 
   await xfs.changeFilePromise(fuseStatePath, JSON.stringify(fuseState), {});
 
-  const fetcher = async (url: string) => {
-    const resp = await httpUtils.request(url, null, {configuration: project.configuration, })
+  const fetcher = async (url: string): Promise<NodeJS.ReadableStream> => {
+    const resp = await httpUtils.request(url, null, { configuration: project.configuration, })
     if (resp.statusCode !== 200) {
       throw new Error(`Failed to download ${url}, status code: ${resp.statusCode}`);
     }
-    return resp.body;
+    return Readable.from(resp.body);
   }
-  
+
   const nmPath = ppath.join(project.cwd, NODE_MODULES);
   await runFuse(fetcher, nmPath, fuseStatePath);
 
