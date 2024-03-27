@@ -724,8 +724,8 @@ async function createBinSymlinkMap(installState: NodeModulesLocatorMap, location
     const bin = new Map();
     if (manifest) {
       for (const [name, value] of manifest.bin) {
-        const target = ppath.join(locations[0], value);
-        if (value !== `` && xfs.existsSync(target)) {
+        // const target = ppath.join(locations[0], value);
+        if (value !== ``) {
           bin.set(name, value);
         }
       }
