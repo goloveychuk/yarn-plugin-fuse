@@ -1,5 +1,5 @@
 import * as path from 'path';
-import * as fs from 'fs';
+import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
 import { spawn } from 'child_process';
 import { pipeline } from 'stream/promises';
@@ -9,12 +9,12 @@ import { getExecFileName } from '../utils.mjs';
 import metadata from '../fuse/output/metadata.json';
 import { fileURLToPath } from 'url';
 import * as os from 'os';
-import * as https from 'https';
+
 
 async function checkChecksum(p: string, checksum: string) {
   const hash = crypto.createHash('sha512');
-  const stream = fs.createReadStream(p);
-  await pipeline(stream, hash);
+  const stream = await fs.open(p, 'r');
+  await pipeline(stream.createReadStream(), hash);
   const hashRes = hash.digest('hex');
   if (hashRes !== checksum) {
     throw new Error(`Checksum mismatch for ${p}`);
@@ -42,35 +42,29 @@ async function waitToMount(nmPath: PortablePath) {
   }
 }
 
-function downloadFile(url: string, dest: string) {
+type Fetcher = (url: string) => Promise<NodeJS.ReadableStream>
+
+async function downloadFile(fetcher: Fetcher, url: string) {
   const tmpPath = path.join(os.tmpdir(), crypto.randomUUID());
-  return new Promise<void>((resolve, reject) => {
-    const file = fs.createWriteStream(tmpPath);
-    const req = https.get(url, (res) => {
-      res.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        fs.rename(tmpPath, dest, (err) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve();
-          }
-        });
-      });
-    });
-    req.on('error', (err) => {
-      reject(err);
-    });
-    req.end();
-  });
+  const stream = await fetcher(url)
+  const handle = await fs.open(tmpPath, 'w', 0o700)
+  await pipeline(stream, handle.createWriteStream());
+  await handle.close();
+  return tmpPath;
 }
 
-async function downloadFileOrCache(url: string): Promise<string> {
-    throw new Error('Not implemented');
+async function downloadFileOrCache(fetcher: Fetcher, url: string, key: string): Promise<string> {
+  const resultPath = path.join(os.tmpdir(), key);
+  if (await (fs.stat(resultPath).catch(() => false))) {
+    return resultPath;
+  }
+  const newPath = await downloadFile(fetcher, url);
+  await fs.rename(newPath, resultPath);
+  return resultPath
 }
 
-export async function runFuse(nmPath: PortablePath, confPath: string) {
+export async function runFuse({ fetcher, nmPath, projectRoot, confPath }: { fetcher: Fetcher, nmPath: PortablePath, projectRoot: string, confPath: string }) {
+  const info = os.userInfo();
   const name = getExecFileName() as keyof typeof metadata;
   const meta = metadata[name];
   if (!meta) {
@@ -81,16 +75,25 @@ export async function runFuse(nmPath: PortablePath, confPath: string) {
   if (filePath.protocol === 'file:') {
     realFilePath = fileURLToPath(filePath);
   } else {
-    realFilePath = await downloadFileOrCache(filePath.href);
+    realFilePath = await downloadFileOrCache(fetcher, filePath.href, `${info.uid}-${meta.checksum}`);
   }
   await checkChecksum(realFilePath, meta.checksum);
-  const child = spawn(realFilePath, [confPath], {
+  const workdir = path.join(projectRoot, '.fuse-workdir');
+  const child = spawn('sudo', [realFilePath, '-workdir', workdir, '-uid', String(info.uid), '-gid', String(info.gid), confPath], {
     detached: true,
-    stdio: 'inherit',
   });
-  child.unref();
+  console.log("PID", child.pid)
 
+  child.stderr.pipe(process.stderr)
+  child.stdout.pipe(process.stdout)
+  
+  const clean = () => {
+    child.stdout.destroy()
+    child.stderr.destroy()
+  }
+
+  child.unref()  
   await waitToMount(nmPath);
-
-  // await api.waitToInit();
+  clean()
+  return clean
 }

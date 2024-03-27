@@ -18,7 +18,7 @@ import (
 )
 
 type fListedData struct {
-	ino      uint64
+	index    uint64
 	fileData *zipFileData
 }
 
@@ -62,7 +62,6 @@ type proccessedZip struct {
 	processed   bool
 	zipPath     *string
 	stripPrefix string
-	inoStart    uint64
 }
 
 func getZFAttrs(f *zip.File) fuse.Attr {
@@ -86,7 +85,6 @@ func (this *proccessedZip) processZip() (*proccessedZip, error) {
 		return this, nil
 	}
 	zipPath := this.zipPath
-	curIno := this.inoStart
 	stripPrefix := this.stripPrefix
 
 	zr, err := zip.OpenReader(*zipPath)
@@ -95,7 +93,7 @@ func (this *proccessedZip) processZip() (*proccessedZip, error) {
 	}
 	defer zr.Close()
 
-	for _, f := range zr.File {
+	for fileIndex, f := range zr.File {
 
 		cleaned := filepath.Clean(f.Name)
 		if !strings.HasPrefix(cleaned, stripPrefix) {
@@ -139,10 +137,9 @@ func (this *proccessedZip) processZip() (*proccessedZip, error) {
 					log.Fatalf("Unknown file mode %s, %s, %s", mode, f.Name, *zipPath)
 				}
 				d := &fListedData{
-					ino:      curIno,
+					index:    uint64(fileIndex),
 					fileData: fileData,
 				}
-				curIno += 1
 				this.chMap[prev][part] = d
 			}
 			prev = fullPath
@@ -152,8 +149,8 @@ func (this *proccessedZip) processZip() (*proccessedZip, error) {
 	return this, nil
 }
 
-func newProcessedZip(path *string, stripPrefix string, inoStart uint64) *proccessedZip {
-	return &proccessedZip{chMap: make(map[string]map[string]*fListedData), zipPath: path, stripPrefix: stripPrefix, inoStart: inoStart}
+func newProcessedZip(path *string, stripPrefix string) *proccessedZip {
+	return &proccessedZip{chMap: make(map[string]map[string]*fListedData), zipPath: path, stripPrefix: stripPrefix}
 }
 
 type zipGetter struct {
@@ -162,16 +159,16 @@ type zipGetter struct {
 }
 
 type IZipGetter interface {
-	GetZip(path string, stripPrefix string, inoStart uint64) (*proccessedZip, error)
+	GetZip(path string, stripPrefix string) (*proccessedZip, error)
 }
 
-func (zg *zipGetter) GetZip(path string, stripPrefix string, inoStart uint64) (*proccessedZip, error) {
+func (zg *zipGetter) GetZip(path string, stripPrefix string) (*proccessedZip, error) {
 	zg.mu.Lock()
 	if zr, ok := zg.cache.Get(path); ok {
 		zg.mu.Unlock()
 		return zr.processZip()
 	}
-	zr := newProcessedZip(&path, stripPrefix, inoStart)
+	zr := newProcessedZip(&path, stripPrefix)
 	zg.cache.Add(path, zr)
 	zg.mu.Unlock()
 	return zr.processZip()

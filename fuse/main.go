@@ -12,12 +12,14 @@ import (
 	"flag"
 	"fmt"
 	"goloveychuk/yarn-fuse/zip"
+	"hash/fnv"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"runtime"
 	"strings"
 	"sync"
@@ -36,7 +38,7 @@ const INO_STEP = uint64(1_000_000_000)
 
 var last_ino = uint64(0)
 
-var inoCache *inoCacheStr
+// var inoCache *inoCacheStr
 
 const UNMOUNT_FILE = ".00unmount"
 
@@ -44,10 +46,11 @@ type inoGen struct {
 	ino uint64
 	gen uint64
 }
-type inoCacheStr struct {
-	m  map[string]inoGen
-	mu sync.Mutex
-}
+
+// type inoCacheStr struct {
+// 	m  map[string]inoGen
+// 	mu sync.Mutex
+// }
 
 type dependencyRoot struct {
 	LinkType  string                     //SOFT HARD
@@ -162,30 +165,36 @@ func getMode(dep *dependencyRoot) uint32 {
 }
 
 func getInoStart(linkType string, target string) inoGen {
-	// breaks find node_modules -type f | wc -l
-	if linkType == "HARD" && target != "" {
-		inoCache.mu.Lock()
-		defer inoCache.mu.Unlock()
-		if ino, ok := inoCache.m[target]; ok {
-			ino.gen++
-			inoCache.m[target] = ino
-			// fmt.Print("cached", target, ino, "\n")
-			return ino
-			// fmt.Print("cached", r.Target, ino, "\n")
-		} else {
-			newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
-			inoGen := inoGen{ino: newInoStart, gen: 1}
-			inoCache.m[target] = inoGen
-			return inoGen
-		}
-	} else {
-		newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
-		return inoGen{ino: newInoStart, gen: 1}
-
-	}
-	// r.inoStart = newInoStart
-	// }
+	newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
+	return inoGen{ino: newInoStart}
 }
+
+// func getInoStart(linkType string, target string) inoGen {
+// 	// breaks find node_modules -type f | wc -l
+// 	if linkType == "HARD" && target != "" {
+// 		inoCache.mu.Lock()
+// 		defer inoCache.mu.Unlock()
+// 		if ino, ok := inoCache.m[target]; ok {
+// 			ino.gen++
+// 			inoCache.m[target] = ino
+// 			// fmt.Print("cached", target, ino, "\n")
+// 			return ino
+// 			// fmt.Print("cached", r.Target, ino, "\n")
+// 		} else {
+// 			newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
+// 			inoGen := inoGen{ino: newInoStart, gen: 1} // gen: 1
+
+// 			inoCache.m[target] = inoGen //does not work when covered with overlayfs
+// 			return inoGen
+// 		}
+// 	} else {
+// 		newInoStart := atomic.AddUint64(&last_ino, INO_STEP)
+// 		return inoGen{ino: newInoStart, gen: 1} // gen: 1
+
+// 	}
+// 	// r.inoStart = newInoStart
+// 	// }
+// }
 
 func (r *dependencyNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	return r.dependencyRoot.GetChild(ctx, &r.Inode, name, out)
@@ -299,7 +308,7 @@ func runGCInterval(interval time.Duration) {
 			runtime.GC()
 			var m runtime.MemStats
 			runtime.ReadMemStats(&m)
-			fmt.Printf("Alloc = %v MiB\n", m.Alloc/1024/1024)
+			// fmt.Printf("Alloc = %v MiB\n", m.Alloc/1024/1024)
 		}
 	}()
 }
@@ -317,14 +326,51 @@ func (this *ApiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-func main() {
+type layoutFsOpts struct {
+	lower string
+	upper string
+	work  string
+	mount string
+}
 
+func mountLayoutFs(opts layoutFsOpts) {
+	cmd := exec.Command("mount", "-t", "overlay", "-o", "xino=off,redirect_dir=off,index=off,metacopy=off,lowerdir="+opts.lower+",upperdir="+opts.upper+",workdir="+opts.work, "overlay", opts.mount)
+	fmt.Println(cmd.String())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		dmesgOutput, _ := exec.Command("dmesg").CombinedOutput()
+		log.Fatalf("mount overlay: %v\n%s\ndmesg:\n%s\n", err, out, dmesgOutput)
+	}
+}
+
+func hashString(str string) string {
+	h := fnv.New128a()
+	h.Write([]byte(str))
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func main() {
+	fmt.Println(os.Args)
 	debug := flag.Bool("debug", false, "print debug data")
 	prof := flag.Bool("prof", false, "open profile server")
-
+	_workdir := flag.String("workdir", "", "dir for temp mounts")
+	_uid := flag.Int("uid", -1, "uid")
+	_gid := flag.Int("gid", -1, "gid")
 	flag.Parse()
 	if len(flag.Args()) < 1 {
 		log.Fatal("Usage:\n  hello MOUNTPOINT")
+	}
+	uid := *_uid
+	gid := *_gid
+	workdir := *_workdir
+	if uid == -1 || gid == -1 {
+		log.Fatal("uid and gid are required")
+	}
+	if workdir == "" {
+		log.Fatal("workdir is required")
+	}
+	getTempDir := func(p string) string {
+		return path.Join(workdir, hashString(p))
 	}
 	if *prof {
 		defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")). // profile.MemProfile
@@ -338,7 +384,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	inoCache = &inoCacheStr{m: make(map[string]inoGen)}
+	// inoCache = &inoCacheStr{m: make(map[string]inoGen)}
 
 	fuseData := &FuseData{}
 
@@ -349,7 +395,27 @@ func main() {
 
 	fuseData.init()
 	// fmt.Println(fuseData.Roots)
-	servers := make(map[string]*fuse.Server, 0)
+	cleans := make([]func(), 0)
+	addClean := func(f func()) {
+		// cleans = append([]func(){f}, cleans...)
+		cleans = append(cleans, f)
+	}
+	cleanup := func() {
+		<-time.After(1 * time.Second)
+		// listener.Close()
+		wg := sync.WaitGroup{}
+		for _, _clean := range cleans {
+			wg.Add(1)
+			go func(cl func()) {
+				defer wg.Done()
+				cl()
+			}(_clean)
+		}
+		wg.Wait()
+		fmt.Println("Finished cleanup")
+		os.Exit(1)
+	}
+	defer cleanup()
 
 	toMount := make([]ToMount, 0)
 	for mount, root := range fuseData.Roots {
@@ -361,45 +427,67 @@ func main() {
 	ZIP_GETTER = zip.CreateZipGetter()
 	for _, mount := range toMount {
 		fmt.Println("Mounting", mount.path)
-		if isExists(mount.path) {
-			fmt.Println("Unmounting", mount.path)
-			cmd := exec.Command("umount", mount.path)
+		mountPath := mount.path
+		fuseMountDir := getTempDir(mountPath + "/fuse")
+		if isExists(fuseMountDir) {
+			fmt.Println("Unmounting", fuseMountDir)
+			cmd := exec.Command("umount", fuseMountDir)
 			err := cmd.Run()
 			if err != nil {
 				fmt.Println("unmounting err", err)
 			}
 		} else {
-			os.Mkdir(mount.path, 0755)
+			os.MkdirAll(fuseMountDir, 0755)
+			os.Chown(fuseMountDir, uid, gid)
 		}
-		opts := &fs.Options{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}
+		opts := &fs.Options{UID: uint32(uid), GID: uint32(gid)}
 
 		timeout := time.Second
 		opts.AttrTimeout = &timeout
 		opts.NegativeTimeout = &timeout
 		opts.EntryTimeout = &timeout
-		opts.DirectMount = true
+		opts.DirectMountStrict = true
+		// opts.AllowOther = true //sudo nano /etc/fuse.conf
+		// opts.DirectMountStrict = true
 
 		// opts.MaxBackground = 30
 		opts.Debug = *debug
 		opts.Options = []string{
+			// "allow_root",
 			// "vm.vfs_cache_pressure=10", //incorrect
 		}
 
-		server, err := fs.Mount(mount.path, mount.root, opts)
+		server, err := fs.Mount(fuseMountDir, mount.root, opts)
 		if err != nil {
 			log.Fatalf("Mount fail: %v\n", err)
 		}
-		fmt.Println("Mounted!", mount.path)
-		servers[mount.path] = server
+		addClean(func() {
+			fmt.Println("Unmounting fuse", fuseMountDir)
+			err := server.Unmount()
+			if err != nil {
+				fmt.Println("unmounting fuse err", err)
+			}
+		})
+		fmt.Println("Mounted fuse!", mountPath)
+		workdir := getTempDir(mountPath + "/work")
+		upper := getTempDir(mountPath + "/upper")
+		os.MkdirAll(workdir, 0755) // 0700?
+		os.Chown(workdir, uid, gid)
+		os.MkdirAll(upper, 0755)
+		os.Chown(upper, uid, gid)
+		os.MkdirAll(mountPath, 0755)
+		os.Chown(mountPath, uid, gid)
+		mountLayoutFs(layoutFsOpts{lower: fuseMountDir, upper: upper, work: workdir, mount: mountPath})
+		fmt.Println("Mounted overlay!", mountPath)
+		addClean(func() {
+			fmt.Println("Unmounting overlay", mountPath)
+			cmd := exec.Command("umount", mountPath)
+			err := cmd.Run()
+			if err != nil { //todo handle busy
+				fmt.Println("unmounting overlay err", err)
+			}
+		})
 
-		// go func() {
-		// 	err := server.WaitMount()
-		// 	if err != nil {
-		// 		log.Println(err)
-		// 	}
-		// 	println("here", mount.path, err)
-		// 	close <- syscall.SIGTERM
-		// }()
 	}
 	// handler := &ApiServer{}
 	// listener, err2 := net.Listen("unix", controlPath)
@@ -407,28 +495,6 @@ func main() {
 	// 	log.Fatal(err2)
 	// }
 	// go http.Serve(listener, handler)
-
-	cleanup := func() {
-
-		<-time.After(1 * time.Second)
-		// listener.Close()
-		for name, server := range servers {
-			fmt.Println("unmounting\n", name)
-			err := server.Unmount()
-			if err != nil {
-				fmt.Println("unmounting err 1", err)
-			}
-			// <-time.After(1 * time.Second)
-			// cmd := exec.Command("umount", name)
-			// err = cmd.Run()
-			// if err != nil {
-			// 	fmt.Println("unmounting err 2", err)
-			// }
-
-		}
-		fmt.Println("Finished cleanup")
-		os.Exit(1)
-	}
 
 	go func() {
 		<-close
