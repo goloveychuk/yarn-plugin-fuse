@@ -16,7 +16,7 @@ jobs:
     name: Release Asset
     runs-on: ubuntu-20.04 # glibc 2.31
     outputs:
-      url: ${{ steps.create_release.outputs.url }}
+      plugin_url: ${{ fromJSON(steps.create_release.outputs.assets)[0].browser_download_url }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -63,14 +63,4 @@ jobs:
       - name: Test
         run: bash test.bash
         env:
-          FUSE_PLUGIN_PATH: ${{ needs.publish.outputs.url }}/plugin-fuse.js
-        
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: false
-          prerelease: false
-          files: | 
-            bundles/@yarnpkg/plugin-fuse.js
-            fuse/output/*
+          FUSE_PLUGIN_PATH: ${{ needs.publish.outputs.plugin_url }}
