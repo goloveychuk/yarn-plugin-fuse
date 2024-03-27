@@ -3,17 +3,16 @@ import {xfs}                                from '@yarnpkg/fslib';
 import {NodeModulesHoistingLimits}          from '@yarnpkg/nm';
 
 import {NodeModulesLinker, NodeModulesMode} from './NodeModulesLinker';
-import {getGlobalHardlinksStore}            from './NodeModulesLinker';
+
 
 
 
 const plugin: Plugin<Hooks> = {
-  // hooks: {
-  //   cleanGlobalArtifacts: async configuration => {
-  //     const globalHardlinksDirectory = getGlobalHardlinksStore(configuration);
-  //     await xfs.removePromise(globalHardlinksDirectory);
-  //   },
-  // },
+  hooks: {
+    // afterAllInstalled(project, {cache, report}) {
+
+    // }
+  },
   configuration: {
 
   },

@@ -63,7 +63,7 @@ async function downloadFileOrCache(fetcher: Fetcher, url: string, key: string): 
   return resultPath
 }
 
-export async function runFuse({fetcher, nmPath, projectRoot, confPath}: {fetcher: Fetcher, nmPath: PortablePath, projectRoot: string, confPath: string}) {
+export async function runFuse({ fetcher, nmPath, projectRoot, confPath }: { fetcher: Fetcher, nmPath: PortablePath, projectRoot: string, confPath: string }) {
   const info = os.userInfo();
   const name = getExecFileName() as keyof typeof metadata;
   const meta = metadata[name];
@@ -81,11 +81,19 @@ export async function runFuse({fetcher, nmPath, projectRoot, confPath}: {fetcher
   const workdir = path.join(projectRoot, '.fuse-workdir');
   const child = spawn('sudo', [realFilePath, '-workdir', workdir, '-uid', String(info.uid), '-gid', String(info.gid), confPath], {
     detached: true,
-    stdio: 'inherit',
   });
-  child.unref();
   console.log("PID", child.pid)
-  await waitToMount(nmPath);
 
-  // await api.waitToInit();
+  child.stderr.pipe(process.stderr)
+  child.stdout.pipe(process.stdout)
+  
+  const clean = () => {
+    child.stdout.destroy()
+    child.stderr.destroy()
+  }
+
+  child.unref()  
+  await waitToMount(nmPath);
+  clean()
+  return clean
 }
