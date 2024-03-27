@@ -40,33 +40,30 @@ async function waitToMount(nmPath: PortablePath) {
     }
   }
 }
+type Fetcher = (url: string) => Promise<Buffer>
 
-async function downloadFile(url: string) {
+async function downloadFile(fetcher: Fetcher, url: string) {
   const tmpPath = path.join(os.tmpdir(), crypto.randomUUID());
-  const resp = await fetch(url)
-  if (!resp.ok) {
-    throw new Error(`Failed to download ${url}`);
-  }
-  if (!resp.body) {
-    throw new Error(`No body for ${url}`);
-  }
-  const handle = await fs.open(tmpPath, 'w')
-  await pipeline(resp.body, handle.createWriteStream());
+  const buffer = await fetcher(url)
+  const handle = await fs.open(tmpPath, 'w', 0o700)
+  // await pipeline(resp.body, handle.createWriteStream());
+  await handle.write(buffer);
+  await handle.close();
   return tmpPath;
 }
 
-async function downloadFileOrCache(url: string, key: string): Promise<string> {
+async function downloadFileOrCache(fetcher: Fetcher, url: string, key: string): Promise<string> {
   const resultPath = path.join(os.tmpdir(), key);
   if (await (fs.stat(resultPath).catch(() => false))) {
     return resultPath;
   }
-  const newPath = await downloadFile(url);
-  await fs.chmod(newPath, 0o700);
+  const newPath = await downloadFile(fetcher, url);
   await fs.rename(newPath, resultPath);
   return resultPath
 }
 
-export async function runFuse(nmPath: PortablePath, confPath: string) {
+export async function runFuse(fetcher: Fetcher, nmPath: PortablePath, confPath: string) {
+  const info = os.userInfo();
   const name = getExecFileName() as keyof typeof metadata;
   const meta = metadata[name];
   if (!meta) {
@@ -77,10 +74,9 @@ export async function runFuse(nmPath: PortablePath, confPath: string) {
   if (filePath.protocol === 'file:') {
     realFilePath = fileURLToPath(filePath);
   } else {
-    realFilePath = await downloadFileOrCache(filePath.href, meta.checksum);
+    realFilePath = await downloadFileOrCache(fetcher, filePath.href, `${info.uid}-${meta.checksum}`);
   }
   await checkChecksum(realFilePath, meta.checksum);
-  const info = os.userInfo();
   const child = spawn('sudo', [realFilePath, '-uid', String(info.uid), '-gid', String(info.gid), confPath], {
     detached: true,
     stdio: 'inherit',

@@ -2,7 +2,7 @@ import { structUtils, Report, Manifest, miscUtils, formatUtils } from '@yarnpkg/
 import { Locator, Package, FinalizeInstallStatus, hashUtils } from '@yarnpkg/core';
 import { Linker, LinkOptions, MinimalLinkOptions, LinkType, WindowsLinkType } from '@yarnpkg/core';
 import { LocatorHash, Descriptor, DependencyMeta, Configuration } from '@yarnpkg/core';
-import { MessageName, Project, FetchResult, Installer } from '@yarnpkg/core';
+import { MessageName, Project, FetchResult, Installer, httpUtils } from '@yarnpkg/core';
 import { PortablePath, npath, ppath, Filename } from '@yarnpkg/fslib';
 import { VirtualFS, xfs, FakeFS, NativePath } from '@yarnpkg/fslib';
 import { buildNodeModulesTree } from '@yarnpkg/nm';
@@ -794,8 +794,16 @@ async function persistNodeModules(preinstallState: InstallState, installState: N
 
   await xfs.changeFilePromise(fuseStatePath, JSON.stringify(fuseState), {});
 
+  const fetcher = async (url: string) => {
+    const resp = await httpUtils.request(url, null, {configuration: project.configuration, })
+    if (resp.statusCode !== 200) {
+      throw new Error(`Failed to download ${url}, status code: ${resp.statusCode}`);
+    }
+    return resp.body;
+  }
+  
   const nmPath = ppath.join(project.cwd, NODE_MODULES);
-  await runFuse(nmPath, fuseStatePath);
+  await runFuse(fetcher, nmPath, fuseStatePath);
 
   let installChangedByUser = false // ??
   await writeInstallState(project, installState, binSymlinks, nmMode, { installChangedByUser });
