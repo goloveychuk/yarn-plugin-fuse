@@ -353,6 +353,7 @@ func main() {
 	fmt.Println(os.Args)
 	debug := flag.Bool("debug", false, "print debug data")
 	prof := flag.Bool("prof", false, "open profile server")
+	_workdir := flag.String("workdir", "", "dir for temp mounts")
 	_uid := flag.Int("uid", -1, "uid")
 	_gid := flag.Int("gid", -1, "gid")
 	flag.Parse()
@@ -361,11 +362,15 @@ func main() {
 	}
 	uid := *_uid
 	gid := *_gid
+	workdir := *_workdir
 	if uid == -1 || gid == -1 {
 		log.Fatal("uid and gid are required")
 	}
+	if workdir == "" {
+		log.Fatal("workdir is required")
+	}
 	getTempDir := func(p string) string {
-		return path.Join(os.TempDir(), "yarn-fuse-linker-"+string(uid), hashString(p))
+		return path.Join(workdir, hashString(p))
 	}
 	if *prof {
 		defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")). // profile.MemProfile

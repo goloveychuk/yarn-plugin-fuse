@@ -804,7 +804,7 @@ async function persistNodeModules(preinstallState: InstallState, installState: N
   }
 
   const nmPath = ppath.join(project.cwd, NODE_MODULES);
-  await runFuse(fetcher, nmPath, fuseStatePath);
+  await runFuse({ fetcher, nmPath, projectRoot: project.cwd, confPath: fuseStatePath });
 
   let installChangedByUser = false // ??
   await writeInstallState(project, installState, binSymlinks, nmMode, { installChangedByUser });

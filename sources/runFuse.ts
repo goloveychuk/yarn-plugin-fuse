@@ -63,7 +63,7 @@ async function downloadFileOrCache(fetcher: Fetcher, url: string, key: string): 
   return resultPath
 }
 
-export async function runFuse(fetcher: Fetcher, nmPath: PortablePath, confPath: string) {
+export async function runFuse({fetcher, nmPath, projectRoot, confPath}: {fetcher: Fetcher, nmPath: PortablePath, projectRoot: string, confPath: string}) {
   const info = os.userInfo();
   const name = getExecFileName() as keyof typeof metadata;
   const meta = metadata[name];
@@ -78,7 +78,8 @@ export async function runFuse(fetcher: Fetcher, nmPath: PortablePath, confPath: 
     realFilePath = await downloadFileOrCache(fetcher, filePath.href, `${info.uid}-${meta.checksum}`);
   }
   await checkChecksum(realFilePath, meta.checksum);
-  const child = spawn('sudo', [realFilePath, '-uid', String(info.uid), '-gid', String(info.gid), confPath], {
+  const workdir = path.join(projectRoot, '.fuse-workdir');
+  const child = spawn('sudo', [realFilePath, '-workdir', workdir, '-uid', String(info.uid), '-gid', String(info.gid), confPath], {
     detached: true,
     stdio: 'inherit',
   });
